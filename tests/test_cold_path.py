@@ -38,7 +38,10 @@ PROMISE_FILES = ["README.md"] + [
     os.path.join("skills", d, "SKILL.md")
     for d in sorted(os.listdir(os.path.join(PLUGIN, "skills")))
 ]
-VERB = re.compile(r"cckit assistant ([a-z][a-z-]+)")
+# Две формы, обе законные: «cckit assistant <глагол>» в прозе и «$CK <глагол>»
+# в примерах README. Вторая появилась потому, что бинарника `cckit` плагин не
+# везёт, — и сканер, знающий только первую, объявлял бы обещание отсутствующим.
+VERB = re.compile(r"(?:cckit assistant|\$CK) ([a-z][a-z-]+)")
 
 
 def promised_verbs():

@@ -20,6 +20,17 @@ bad()  { printf '  БЕДА %s\n' "$*"; ok=1; }
 # раз в час. В `check` он идёт ПЕРВЫМ: на красном наборе всё, что ниже, —
 # шум, и читать его незачем.
 cmd_test() {
+    # «a linter enforces it» — обещание, которое до сих пор держалось на том,
+    # что линтер звали руками. Теперь его зовут ворота.
+    say "статусы записей в журналах"
+    local bad=0
+    for f in "$ROOT/LEARNED.md" "$ROOT/assistants"/*/LEARNED.md; do
+        [ -f "$f" ] || continue
+        python3 "$ROOT/bin/cckit_learned.py" "$f" >/dev/null 2>&1 || { bad=1; \
+            python3 "$ROOT/bin/cckit_learned.py" "$f" | sed 's|.*|    &|'; }
+    done
+    [ "$bad" = 0 ] && good "все записи со статусом" || bad "запись без статуса"
+
     say "== набор =="
     local out n
     if out="$(cd "$ROOT" && python3 -m unittest discover -s tests 2>&1)"; then

@@ -634,6 +634,34 @@ def instance_home(role, project):
     return cand
 
 
+def cmd_roles(argv):
+    """Что можно поставить. Раньше список ролей выдавался ТОЛЬКО из текста
+    ошибки `die()` — узнать его можно было, лишь промахнувшись мимо имени."""
+    rows = []
+    for label, root in role_roots():
+        if not os.path.isdir(root):
+            continue
+        for name in sorted(os.listdir(root)):
+            cp = os.path.join(root, name, "card.yaml")
+            if not os.path.isfile(cp):
+                continue
+            if any(r[0] == name for r in rows):
+                continue          # своя библиотека перекрывает поставляемую
+            try:
+                card = load_card(cp)
+            except SystemExit:
+                continue
+            rows.append((name, card.get("summary", "—"), label))
+    if not rows:
+        print("ролей нет ни в вашей библиотеке, ни в поставке плагина")
+        return 1
+    w = max(len(r[0]) for r in rows)
+    for name, summary, where in rows:
+        print("%-*s  %s" % (w, name, summary))
+        print("%-*s  (%s)" % (w, "", where))
+    return 0
+
+
 def cmd_install(argv):
     extra_read = []
     if not argv:
@@ -702,7 +730,7 @@ def cmd_install(argv):
     granted = apply_owner_rules(home, granted)
     if "spawn" in granted and not card.get("budget_usd"):
         die("«spawn» без budget_usd в карточке не выдаётся: право звать других без потолка денег")
-    apply_grants(home, role, project, card, granted)
+    apply_grants(home, role, project, card, granted, extra_read=extra_read)
 
     writes = card.get("writes", []) or ["— только чтение"]
     with open(os.path.join(home, "CLAUDE.md"), "w", encoding="utf-8") as fh:
@@ -1028,7 +1056,8 @@ def main(argv=None):
         # Одна строка на глагол, полной формой. Раньше tree, show и where
         # прятались за интерпунктами внутри строки про list: команда, которую
         # не видно в справке, для человека не существует.
-        print("cckit assistant install <роль> --project DIR [--also-read DIR] [--grant a,b] [--i-mean-it] [--force]\n"
+        print("cckit assistant roles\n"
+              "cckit assistant install <роль> --project DIR [--also-read DIR] [--grant a,b] [--i-mean-it] [--force]\n"
               'cckit assistant run <экземпляр> "задание" [--budget N] [--timeout СЕК]\n'
               "cckit assistant list [--all] [--json]\n"
               "cckit assistant tree\n"
@@ -1042,6 +1071,8 @@ def main(argv=None):
               "за песочницу выводят: " + ", ".join(sorted(DANGEROUS)))
         return 2
     cmd, rest = argv[0], argv[1:]
+    if cmd == "roles":
+        return cmd_roles(rest)
     if cmd == "run":
         return cmd_run(rest)
     if cmd == "install":

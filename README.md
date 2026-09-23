@@ -84,7 +84,10 @@ rebuilds everything generated. Open a different project tomorrow and you get a
 second instance, not a polluted first one.
 
 Every record in `LEARNED.md` carries how well it is known — `измерено`,
-`наблюдение`, `гипотеза`, `слово владельца` — and a linter enforces it. Without
+`наблюдение`, `гипотеза`, `слово владельца` — and `bin/cckit_learned.py`
+checks it, in `./dev.sh check` and by hand. It is not yet wired to the
+assistant itself: a record written without a status is caught at the gate, not
+as it is written. That hook is 1.2. Without
 that, one session's guess reads a month later exactly like a measured fact.
 
 ## Capabilities are granted, not baked in
@@ -116,8 +119,10 @@ typed while looking at theirs. Installing into a Django tree denies `app/`,
 - The deny list is a snapshot taken at install. A top-level directory added to
   the project afterwards is denied by nothing. Re-run `install --force` (it
   does not touch memory).
-- The library holds one role. `find-agent` will honestly tell you there is
-  nothing to install.
+- The library holds two roles — `design-scout` (maps a codebase for a build)
+  and `cckit-smith` (finds the gaps in CCKit itself). `$CK roles` lists them.
+  Two is not a library; `find-agent` will honestly tell you when there is
+  nothing fitting to install.
 
 ## Without Python
 
