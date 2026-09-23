@@ -96,6 +96,24 @@ DANGEROUS = ("shell", "peers", "publish", "schedule", "mcp")
 BASE_CAPS = ("read", "skills")
 
 
+# Что именно открывает каждая опасная группа. Без этого «выводит за песочницу»
+# — слово без содержания: выдающий не знает, на что соглашается. Группа `mcp`
+# страшнее прочих и выглядит безобиднее всех: её список инструментов ПУСТ, она
+# лишь снимает --strict-mcp-config — и тем отдаёт ВСЕ MCP-серверы машины разом,
+# вместе с их инструментами, которых в CAPS нет и которые поэтому не запрещены
+# ничем. На этой машине один только мост CCKit несёт 13 таких, включая
+# send_reply — запись в другие сессии владельца.
+DANGER_EXPLAINED = {
+    "shell": "выполнение команд: всё, что может оболочка, в том числе обход правил путей",
+    "peers": "переписка с другими живыми сессиями владельца",
+    "publish": "публикация наружу — опубликованное могут закэшировать и после удаления",
+    "schedule": "запуск по расписанию, то есть работа без вас и без потолка на день",
+    "mcp": "ВСЕ MCP-серверы машины разом, с их инструментами, которых нет в CAPS "
+           "и которые поэтому не запрещены ничем (здесь это 13 инструментов моста, "
+           "включая запись в другие ваши сессии)",
+}
+
+
 def caps_to_disallowed(granted):
     """Everything not granted becomes --disallowedTools, plus NEVER.
 
@@ -886,7 +904,11 @@ def cmd_grant(argv, revoking=False):
     if not revoking:
         risky = caps & set(DANGEROUS)
         if risky and "--i-mean-it" not in argv:
-            die("возможности %s выводят за песочницу. Повтори с --i-mean-it" % ", ".join(sorted(risky)))
+            lines = ["возможности %s выводят за песочницу:" % ", ".join(sorted(risky))]
+            for c in sorted(risky):
+                lines.append("  %-9s %s" % (c, DANGER_EXPLAINED.get(c, "—")))
+            lines.append("Повтори с --i-mean-it, если согласен на всё перечисленное.")
+            die("\n".join(lines))
         for c in caps:
             warn = check_owner_rule(it["home"], c)
             if warn and not override:
