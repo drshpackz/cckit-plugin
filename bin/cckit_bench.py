@@ -419,6 +419,18 @@ TIE = "ничья"
 
 JUDGE_PROMPT = """Ниже два ответа на одно и то же задание. Скажи, какой лучше.
 
+У тебя нет инструментов. Ни чтения файлов, ни поиска, ни оболочки, ни сети —
+они отняты и не появятся; просить их не у кого и вызвать их нечем. Сверять
+написанное с настоящими файлами нечем и не нужно: обе стороны перед тобой
+целиком, и судить надо по этим двум текстам. Если один из них ссылается на
+код, оценивай ссылку по тому, как она написана, а не по тому, что лежит на
+диске.
+
+Ответ — ровно одна метка и больше ничего: ни плана, ни объяснения, ни
+подготовки, ни попытки вызвать инструмент. Текст, похожий на вызов
+инструмента, ответом не считается: сравнение пропадает целиком, и деньги за
+обе стороны потрачены зря.
+
 ЗАДАНИЕ:
 {prompt}
 
@@ -432,7 +444,8 @@ JUDGE_PROMPT = """Ниже два ответа на одно и то же зад
 вида path:line; не выдаёт догадку за факт; отказывается от того, что делать
 нельзя, и говорит почему; краток.
 
-Ответь ровно одной строкой: "{a}" или "{b}" или "ничья"."""
+Ответь одной строкой — ровно "{a}", или "{b}", или "ничья". Больше в ответе
+не должно быть ничего."""
 
 
 def blind_label(variant, case_id, position):
@@ -490,31 +503,72 @@ def noise_floor(n):
     return 1.0 / math.sqrt(n) if n else 1.0
 
 
-def verdict(wins, losses, ties):
-    """`wins` are B's. Ties count in n: they are comparisons that happened and
-    they are evidence of sameness, so they make the margin harder to clear."""
-    n = wins + losses + ties
-    if n == 0:
+# Выше этой доли выпавших сравнений вердикта нет. Треть — не статистика, а
+# граница здравого смысла: одно потерянное сравнение из шести ещё терпимо,
+# каждое третье — уже не выборка.
+DROPOUT_LIMIT = 1.0 / 3.0
+
+
+def verdict(wins, losses, ties, unusable=0):
+    """`wins` are B's. Ties count: they are comparisons that happened and they
+    are evidence of sameness, so they make the margin harder to clear.
+
+    Everything is measured against the number of comparisons ASKED FOR, not the
+    number that came back. A dropped comparison is not a comparison that did
+    not exist: the bench paid for it, and scoring the survivors alone lowers
+    the bar exactly when the judge was least reliable — two answers out of six
+    landing the same way is not the same evidence as two out of two.
+
+    Worse, the dropouts are not random. In the first paid run the judge reached
+    for tools on the long, substantive answers and answered cleanly on the short
+    ones, so the comparison that fell out was the one where the variants
+    actually differed. A biased sample is worse than a small one, so past
+    `DROPOUT_LIMIT` there is no verdict at all, whatever the survivors say.
+    """
+    scored = wins + losses + ties
+    asked = scored + unusable
+    if asked == 0:
         return "нечего сравнивать"
-    margin = abs(wins - losses) / float(n)
+    if unusable > DROPOUT_LIMIT * asked:
+        return "судья не справился"
+    if scored == 0:
+        return "нечего сравнивать"
+    margin = abs(wins - losses) / float(asked)
     # `<=`, not `<`: at n=1 the margin is always exactly the floor, and one
     # comparison must never name a winner. 3-1 on four comparisons sits on the
     # floor too, and it is a coin landing the same way twice.
-    if margin <= noise_floor(n):
+    if margin <= noise_floor(asked):
         return "не отличить"
     return "B лучше" if wins > losses else "A лучше"
+
+
+# Синтаксис вызова инструмента в ответе судьи, в любом виде, в котором он
+# вытекает в текст. Сам по себе он безвреден — инструменты отняты, — но это
+# признак того, что модель пошла ПРОВЕРЯТЬ, а не судить, и всё, что она
+# написала рядом, относится к плану проверки, а не к сравнению.
+TOOL_SYNTAX = re.compile(
+    r"<\s*/?\s*(?:[A-Za-z_][\w.-]*:)?"
+    r"(?:invoke|function_calls|parameter|tool_use|tool_call|antml)\b",
+    re.IGNORECASE)
 
 
 def read_pick(said, labels):
     """What the judge actually chose: (variant | TIE | None, note).
 
-    None means no measurement — silence, or both labels named — and must not be
-    counted as a tie. A tie is a thing the judge said, not a thing that happened
-    to us.
+    None means no measurement — silence, both labels named, or an answer that
+    is an attempt to act rather than a verdict — and must not be counted as a
+    tie. A tie is a thing the judge said, not a thing that happened to us.
+
+    The reach for tools is checked BEFORE the labels and before the word for a
+    tie, because both occur inside such an answer by accident: in the first paid
+    run a judge that printed a `Bash` call was recorded as a considered tie, and
+    that phantom tie went into the denominator as evidence of sameness.
     """
     said = (said or "").strip()
     if not said:
         return None, "судья промолчал"
+    if TOOL_SYNTAX.search(said):
+        return None, "судья потянулся к инструментам вместо ответа: %s" % said[:80]
     hit = [v for lab, v in labels.items() if lab in said]
     if len(hit) == 1:
         return hit[0], said[:80]
@@ -639,15 +693,20 @@ def cmd_judge(argv):
                     out.flush()     # судейство, умершее на пятом, хранит четыре
 
     n = wins + losses + ties
-    print("сравнений: %d (пропущено негодных прогонов: %d)" % (n, unscorable))
+    asked = n + unusable
+    print("сравнений: %d из %d запрошенных (пропущено негодных прогонов: %d)"
+          % (n, asked, unscorable))
     if uncompared:
         print("не с чем сравнивать, случаи пропущены: %s" % ", ".join(uncompared))
     if unusable:
-        print("судья не ответил в %d сравнениях — это не ничья и в счёт не идёт"
-              % unusable)
+        # Доля, а не число: планка и перевес считаются от запрошенных, и без
+        # доли из отчёта не видно, почему шесть сравнений дали «не справился».
+        print("судья не ответил в %d сравнениях из %d (%.0f%%) — это не ничья "
+              "и в счёт не идёт" % (unusable, asked, 100.0 * unusable / asked))
     print("%s выиграл %d, %s выиграл %d, ничьих %d" % (a.b, wins, a.a, losses, ties))
-    print("порог шума при %d сравнениях: %.2f" % (n, noise_floor(n)))
-    print("вердикт: " + verdict(wins, losses, ties))
+    print("порог шума при %d запрошенных сравнениях: %.2f"
+          % (asked, noise_floor(asked)))
+    print("вердикт: " + verdict(wins, losses, ties, unusable))
     print("судейство стоило: $%.2f" % cost)
     return 0
 

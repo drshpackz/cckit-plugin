@@ -39,6 +39,36 @@ if i >= 0:
 sys.stdout.write(json.dumps({"result": said, "session_id": "j", "total_cost_usd": 0.01}))
 '''
 
+# Судья из первого платного прогона: на длинных содержательных сравнениях он
+# объявлял, что сейчас сверится с файлами, и выдавал сырой синтаксис вызова —
+# а слово «ничья» оказывалось внутри того же текста и уходило в счёт ничьёй.
+FAKE_JUDGE_REACHES = r'''
+import json, os, sys
+p = sys.argv[sys.argv.index("-p") + 1]
+calls = os.environ.get("CCKIT_TEST_CALLS")
+if calls:
+    with open(calls, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"argv": sys.argv[1:], "prompt": p}, ensure_ascii=False) + "\n")
+if "ДЛИННЫЙ" in p:
+    said = ("I'll verify both answers against the actual files.\n"
+            '<invoke name="Bash">\n'
+            '<parameter name="command">ls -la</parameter>\n'
+            "а пока, пожалуй, ничья")
+else:
+    said = "ничья"
+    i = p.find("ХОРОШИЙ")
+    if i >= 0:
+        h = p.rfind("ОТВЕТ ", 0, i)
+        said = p[h + len("ОТВЕТ "):p.index(":", h)]
+sys.stdout.write(json.dumps({"result": said, "session_id": "j", "total_cost_usd": 0.01}))
+'''
+
+# Тот же судья, но в его тексте нет ни метки, ни слова «ничья»: такое
+# сравнение считалось выпавшим и раньше. Здесь виден ровно второй изъян —
+# планка, посчитанная от уцелевших.
+FAKE_JUDGE_MUTE_ON_LONG = FAKE_JUDGE_REACHES.replace(
+    '"а пока, пожалуй, ничья")', '"")')
+
 
 class TestBlinding(unittest.TestCase):
     def test_label_does_not_leak_the_variant_name(self):
@@ -98,6 +128,31 @@ class TestNoise(unittest.TestCase):
     def test_a_losing_candidate_is_named_too(self):
         self.assertEqual(bench.verdict(wins=2, losses=18, ties=0), "A лучше")
 
+    def test_a_clean_sweep_is_no_verdict_when_half_the_judging_fell_out(self):
+        # Уцелевшие 2:0 — чистый перевес, и по ним одним вердикт был бы
+        # «B лучше». Но выпало половина запрошенного, и выпало не случайно.
+        self.assertEqual(bench.verdict(wins=2, losses=0, ties=0, unusable=2),
+                         "судья не справился")
+
+    def test_the_bar_is_counted_from_the_comparisons_asked_for(self):
+        # 24 уцелевших из 36: перевес 6. От уцелевших 6/24 = 0.25 выше порога
+        # 1/√24 = 0.20 — победа. От запрошенных 6/36 = 0.17 ровно на пороге
+        # 1/√36 = 0.17 — той победы не было, её сделало выпадение.
+        self.assertEqual(bench.verdict(wins=15, losses=9, ties=0, unusable=12),
+                         "не отличить")
+
+    def test_a_dropout_at_the_limit_still_yields_a_verdict(self):
+        # Ровно треть — ещё не «не справился»: иначе ограда съедает годные
+        # прогоны и стенд молчит всегда.
+        self.assertEqual(bench.verdict(wins=5, losses=1, ties=0, unusable=3),
+                         "B лучше")
+
+    def test_dropouts_alone_are_not_nothing_to_compare(self):
+        # «Нечего сравнивать» — это когда сравнений не просили. Когда их
+        # просили и все потеряли, это провал судьи, и звать его надо так.
+        self.assertEqual(bench.verdict(wins=0, losses=0, ties=0, unusable=4),
+                         "судья не справился")
+
 
 class TestReadingTheJudge(unittest.TestCase):
     LABELS = {"A1f2": "base", "B9ab": "pe"}
@@ -118,6 +173,29 @@ class TestReadingTheJudge(unittest.TestCase):
 
     def test_both_labels_named_is_not_a_tie(self):
         self.assertIsNone(bench.read_pick("A1f2 против B9ab", self.LABELS)[0])
+
+    def test_a_reach_for_tools_is_not_a_tie_even_when_it_says_the_word(self):
+        # Ровно случай из первого платного прогона: судья пошёл сверяться с
+        # файлами, а слово «ничья» попало в тот же текст и ушло в счёт ничьёй
+        # — то есть выпавшее сравнение записалось доказательством сходства.
+        said = ("I'll verify both answers against the actual files.\n"
+                '<invoke name="Bash">\n'
+                '<parameter name="command">ls -la</parameter>\n'
+                "а пока, пожалуй, ничья")
+        picked, why = bench.read_pick(said, self.LABELS)
+        self.assertIsNone(picked)
+        self.assertIn("инструмент", why)
+
+    def test_a_reach_for_tools_naming_a_label_is_not_a_choice(self):
+        # Метка внутри плана проверки — не выбор: судья её ещё не сделал.
+        said = 'Сначала проверю A1f2: <invoke name="Read">src/a.ts</invoke>'
+        self.assertIsNone(bench.read_pick(said, self.LABELS)[0])
+
+    def test_a_plain_verdict_that_merely_mentions_code_still_counts(self):
+        # Ограда ловит синтаксис вызова, а не разговор о файлах: ответ со
+        # словом «Bash» или с путём — обычный вердикт.
+        self.assertEqual(bench.read_pick("B9ab: он цитирует src/a.ts:12, не Bash",
+                                         self.LABELS)[0], "pe")
 
 
 class TestJudgeFence(unittest.TestCase):
@@ -221,7 +299,9 @@ class TestJudging(unittest.TestCase):
         rc, out = self._judge()
         self.assertEqual(rc, 0)
         self.assertIn("ничьих 0", out)
-        self.assertIn("нечего сравнивать", out)
+        # Сравнения просили и все потеряли — это провал судейства, а не
+        # пустой прогон: «нечего сравнивать» прозвучало бы как «не о чем».
+        self.assertIn("судья не справился", out)
         self.assertEqual([v["picked"] for v in self._verdicts()], [None, None])
 
     def test_a_case_only_one_variant_could_run_is_not_compared(self):
@@ -235,6 +315,69 @@ class TestJudging(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(sorted(v["case"] for v in self._verdicts()), ["c1", "c1"])
         self.assertIn("c2", out)
+
+    def test_a_judge_that_reaches_for_tools_kills_the_verdict_not_just_the_pair(self):
+        # Три случая, два длинных: судья тянется к инструментам ровно там, где
+        # варианты и различались, и отвечает чисто на коротком. По уцелевшему
+        # короткому base выигрывает 2:0 — и это ровно тот вердикт, которого
+        # быть не должно: выпало две трети запрошенного.
+        self._results([
+            self._rec("base", "c1", "ХОРОШИЙ короткий разбор"),
+            self._rec("pe", "c1", "догадка"),
+            self._rec("base", "c2", "разбор", prompt="ДЛИННЫЙ разбери c2"),
+            self._rec("pe", "c2", "ХОРОШИЙ разбор", prompt="ДЛИННЫЙ разбери c2"),
+            self._rec("base", "c3", "разбор", prompt="ДЛИННЫЙ разбери c3"),
+            self._rec("pe", "c3", "ХОРОШИЙ разбор", prompt="ДЛИННЫЙ разбери c3"),
+        ])
+        self._only_on_path(FAKE_JUDGE_REACHES)
+        rc, out = self._judge()
+        self.assertEqual(rc, 0)
+        rows = self._verdicts()
+        self.assertEqual(len(rows), 6, "судили не все пары")
+        dropped = [v for v in rows if v["case"] in ("c2", "c3")]
+        self.assertEqual([(v["picked"], v["tie"]) for v in dropped],
+                         [(None, False)] * 4, "тяга к инструментам засчитана ничьёй")
+        self.assertIn("ничьих 0", out)
+        self.assertIn("судья не ответил в 4 сравнениях из 6", out)
+        self.assertIn("вердикт: судья не справился", out)
+
+    def test_a_sweep_among_the_survivors_is_not_a_verdict(self):
+        # Здесь выпадения негодны и по старому счёту тоже: единственное, что
+        # меняется, — от чего считается планка. Уцелело два сравнения, base
+        # взял оба; по двум это «A лучше», по шести запрошенным — вердикта нет.
+        self._results([
+            self._rec("base", "c1", "ХОРОШИЙ короткий разбор"),
+            self._rec("pe", "c1", "догадка"),
+            self._rec("base", "c2", "разбор", prompt="ДЛИННЫЙ разбери c2"),
+            self._rec("pe", "c2", "ХОРОШИЙ разбор", prompt="ДЛИННЫЙ разбери c2"),
+            self._rec("base", "c3", "разбор", prompt="ДЛИННЫЙ разбери c3"),
+            self._rec("pe", "c3", "ХОРОШИЙ разбор", prompt="ДЛИННЫЙ разбери c3"),
+        ])
+        self._only_on_path(FAKE_JUDGE_MUTE_ON_LONG)
+        rc, out = self._judge()
+        self.assertEqual(rc, 0)
+        self.assertEqual([(v["picked"], v["tie"]) for v in self._verdicts()
+                          if v["case"] != "c1"], [(None, False)] * 4)
+        self.assertIn("base выиграл 2", out)
+        self.assertIn("вердикт: судья не справился", out)
+
+    def test_the_judge_is_told_it_has_no_tools(self):
+        # Ограда судье руки отняла, но модели об этом никто не сказал, и она
+        # тратила ответ на попытку сверки. Проверяется промпт, ДОШЕДШИЙ до
+        # ребёнка, а не константа в модуле.
+        self._results([self._rec("base", "c1", "а"), self._rec("pe", "c1", "б")])
+        self._only_on_path(FAKE_JUDGE)
+        calls = os.path.join(self.tmp, "calls.jsonl")
+        self.addCleanup(os.environ.pop, "CCKIT_TEST_CALLS", None)
+        os.environ["CCKIT_TEST_CALLS"] = calls
+        self._judge()
+        with open(calls, encoding="utf-8") as fh:
+            asked = [json.loads(l) for l in fh if l.strip()]
+        self.assertTrue(asked)
+        for call in asked:
+            q = call["prompt"]
+            self.assertIn("нет инструментов", q, "судье не сказали, что рук нет")
+            self.assertIn("ровно одна метка", q, "судье не сказали, что ответ — метка")
 
     def test_an_unknown_variant_name_is_an_error_not_an_empty_report(self):
         self._results([self._rec("base", "c1", "а"), self._rec("pe", "c1", "б")])
