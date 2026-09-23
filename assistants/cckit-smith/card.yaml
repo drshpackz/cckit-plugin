@@ -1,0 +1,8 @@
+name: cckit-smith
+summary: Улучшает сам CCKit: ищет разрывы между обещанным и существующим, пишет находки со статусом и предлагает правки с доказательством.
+access: write-scoped
+writes: ["docs/findings/**", "docs/superpowers/specs/**"]
+model: claude-opus-5
+effort: xhigh
+budget_usd: 3.00
+compact_at: 200000
