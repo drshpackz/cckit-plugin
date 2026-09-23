@@ -145,14 +145,31 @@ PY
         good "жёстких путей нет"
     fi
 
-    claude plugin validate "$ROOT" 2>&1 | tail -3
+    if claude plugin validate "$ROOT" 2>&1 | tail -3; then
+        good "манифест валиден"
+    else
+        bad "claude plugin validate отверг плагин — он не установится"
+        ok=1
+    fi
     return $ok
 }
 
 cmd_publish() {
     cd "$ROOT" || return 1
-    git add -A
-    if git diff --cached --quiet; then say "нечего публиковать"; return 0; fi
+    # НИКАКОГО git add -A. В дереве бывают чужие незаконченные правки — свои же
+    # агенты, соседняя сессия, недоделанный эксперимент, — и `add -A` уносит их
+    # в общий коммит и в push, откуда не вернёшь. Публикуется только то, что
+    # УЖЕ застейджено осознанно.
+    if ! git diff --cached --quiet; then
+        :
+    elif [ -n "$(git status --porcelain)" ]; then
+        bad "в дереве есть неподготовленные изменения — застейджите то, что публикуете:"
+        git status --short | sed 's|.*|    &|'
+        say "  git add <файлы> && ./dev.sh publish \"сообщение\""
+        return 1
+    else
+        say "нечего публиковать"; return 0
+    fi
     local msg="${1:-cckit: правки}"
     git -c user.name="drshpackz" -c user.email="arinasnorge@gmail.com" commit -q -m "$msg
 
@@ -184,7 +201,7 @@ cmd_all() {
     cmd_publish "${1:-cckit: правки}" && cmd_reinstall
 }
 
-case "${1:-all}" in
+case "${1:-check}" in
     check)     cmd_check ;;
     test)      cmd_test ;;
     eval)      shift; cmd_eval ${1:+"$@"} ;;
