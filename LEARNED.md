@@ -333,8 +333,8 @@ learned выиграл 12, role выиграл 5, ничьих 1
 Замер дословно:
 
 ```
-pwd                        /Users/m1/chiavs-code
-git toplevel               /Users/m1/chiavs-code
+pwd                        /Users/<владелец>/<проект>
+git toplevel               /Users/<владелец>/<проект>
 подгружено автоматически   chiavs-code/CLAUDE.md
                            chiavs-code/.claude/CLAUDE.md
                            memory/MEMORY.md
