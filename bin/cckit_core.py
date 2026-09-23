@@ -11,7 +11,6 @@ import os
 import subprocess
 
 HOME = os.path.expanduser("~")
-PROJECTS = os.path.join(HOME, ".claude", "projects")
 
 # What the CLI appends after the role body when the card declares memory.
 MEMORY_BLOCK = "# Persistent Agent Memory"
@@ -62,14 +61,24 @@ def run_claude(cwd, argv, timeout=600):
         return None, str(e)
 
 
+def projects_dir():
+    """Per call, not per import: a module that froze this at import time would
+    keep reading the real home for the whole test run — and, in a long-lived
+    process, would miss a CLAUDE_CONFIG_DIR set after startup."""
+    base = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(
+        os.path.expanduser("~"), ".claude")
+    return os.path.join(base, "projects")
+
+
 def find_transcript(session_id):
     """By session id, not by reproducing the directory-slug rule: that rule is
     the harness's to change, the id is not."""
-    if not session_id or not os.path.isdir(PROJECTS):
+    p = projects_dir()
+    if not session_id or not os.path.isdir(p):
         return None
     want = str(session_id) + ".jsonl"
-    for d in os.listdir(PROJECTS):
-        cand = os.path.join(PROJECTS, d, want)
+    for d in os.listdir(p):
+        cand = os.path.join(p, d, want)
         if os.path.exists(cand):
             return cand
     return None

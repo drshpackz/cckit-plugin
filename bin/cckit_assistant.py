@@ -23,9 +23,9 @@ import uuid
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from cckit_core import (HOME, LINK_VARS, MEMORY_BLOCK, PROJECTS,  # noqa: E402
-                        find_transcript, isolated_env, run_claude,
-                        system_prompt_parts)
+from cckit_core import (HOME, LINK_VARS, MEMORY_BLOCK,  # noqa: E402
+                        find_transcript, isolated_env, projects_dir,
+                        run_claude, system_prompt_parts)
 from cckit_core import launch_argv as core_launch_argv  # noqa: E402
 
 LIB = os.environ.get("CCKIT_LIBRARY", os.path.join(HOME, ".cckit", "library"))
@@ -334,7 +334,7 @@ def probe_prompt(home, project, body):
     sid = res.get("session_id")
     path = find_transcript(sid)
     if not path:
-        return "не найдено", "нет транскрипта сессии %s под %s" % (sid, PROJECTS)
+        return "не найдено", "нет транскрипта сессии %s под %s" % (sid, projects_dir())
     parts = system_prompt_parts(path)
     if not parts:
         return "не найдено", "в транскрипте нет prompt_snapshot"
