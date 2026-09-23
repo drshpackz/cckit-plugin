@@ -64,6 +64,23 @@ class TestRun(unittest.TestCase):
             self.run_cmd(["role@proj", "найди позицию полосы значков"])
             self.assertIn("найди позицию полосы значков", sb.calls()[0]["argv"])
 
+    def test_an_explicit_budget_wins_over_the_recipe(self):
+        # Флаг, который молча проигрывает рецепту, — враньё в справке.
+        # Замерено: --budget 2.50 при рецепте 3.00 дал прогон на $2.96.
+        with Sandbox() as sb:
+            self.home_with_recipe(sb, budget="3.00")
+            sb.set_reply("ok")
+            self.run_cmd(["role@proj", "задание", "--budget", "0.30"])
+            argv = sb.calls()[0]["argv"]
+            self.assertEqual(argv[argv.index("--max-budget-usd") + 1], "0.30")
+
+    def test_raising_the_ceiling_above_the_recipe_is_said_out_loud(self):
+        with Sandbox() as sb:
+            self.home_with_recipe(sb, budget="0.50")
+            sb.set_reply("ok")
+            _, out = self.run_cmd(["role@proj", "задание", "--budget", "9.00"])
+            self.assertIn("0.50", out, "потолок рецепта поднят молча")
+
     def test_a_home_without_a_recipe_says_so(self):
         with Sandbox() as sb:
             home = os.path.join(sb.home, ".cckit", "assistants", "role@proj")

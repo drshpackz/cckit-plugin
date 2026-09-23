@@ -370,17 +370,28 @@ def trust(paths):
     json.dump(data, open(claude_json(), "w", encoding="utf-8"), indent=2)
 
 
-def run_assistant(home, project, prompt, budget="0.60", timeout=600):
+def run_assistant(home, project, prompt, budget=None, timeout=600):
     """Always through the instance's own launch.json: the probe must exercise
-    the exact command the assistant really runs under, not an approximation."""
+    the exact command the assistant really runs under, not an approximation.
+
+    `budget` — явно названный потолок. Он ПОБЕЖДАЕТ рецепт: флаг, молча
+    проигрывающий записи в launch.json, — враньё в справке. Замерено
+    2026-09-24: `--budget 2.50` при рецепте 3.00 дал прогон на $2.96, то есть
+    флаг не делал ничего. Поднятие потолка выше рецепта называется вслух.
+    """
     lp = os.path.join(home, "launch.json")
     if not os.path.exists(lp):
         return None, "нет рецепта запуска: " + lp
     try:
-        rec = json.load(open(lp, encoding="utf-8"))
+        with open(lp, encoding="utf-8") as fh:
+            rec = json.load(fh)
+        recipe = rec.get("budget_usd")
+        cap = budget or recipe or "0.60"
+        if budget and recipe and float(budget) > float(recipe):
+            sys.stderr.write("потолок поднят с %s до %s (рецепт экземпляра: %s)\n"
+                             % (recipe, budget, recipe))
         argv = launch_argv(home, rec["project"], prompt, set(rec["granted"]),
-                           rec.get("budget_usd") or budget,
-                           extra=["--output-format", "json"])
+                           cap, extra=["--output-format", "json"])
     except Exception as e:
         return None, str(e)
     return run_claude(home, argv, timeout=timeout)
@@ -955,7 +966,7 @@ def cmd_run(argv):
         return 2
 
     res, err = run_assistant(home, it.get("project", ""), prompt,
-                             budget or "0.60", timeout=timeout)
+                             budget, timeout=timeout)
     if err or not res:
         sys.stderr.write("не выполнено: %s\n" % (err or "пустой ответ"))
         return 1
