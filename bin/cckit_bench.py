@@ -146,6 +146,142 @@ def prompt_delivered(session_id, body):
     return True, "частей: %d, %s" % (len(parts), "с блоком памяти" if rest else "без добавок")
 
 
+
+# ── выученный слой ──────────────────────────────────────────────────────────
+#
+# Рука ломается молча и двумя способами, и оба дают строку «не отличить»,
+# которая читается как приговор выученному слою:
+#   1) мерить нечего — у свежей установки LEARNED.md НЕ пуст, там шаблон;
+#   2) мерить было что, но до модели оно не доехало — слой едет @-импортом,
+#      а не системным промптом.
+# Обе беды здесь ловятся до того, как прогон что-то стоил.
+
+NEEDLE_MIN = 24
+
+
+def learned_beyond_template(text):
+    """Что ассистент добавил СВЕРХ шаблона установщика.
+
+    Проверка «файл непустой» на свежей установке срабатывает: установщик
+    кладёт туда ~700 байт шаблона. Стенд тогда честно докладывает «с
+    выученным» и сравнивает две одинаковых руки.
+    """
+    text = (text or "").strip()
+    tmpl = LEARNED_MD.strip()
+    if text.startswith(tmpl):
+        text = text[len(tmpl):]
+    return text.strip()
+
+
+def copy_learned(src_home, box):
+    """Положить выученный слой в песочницу — или сказать, что мерить нечего.
+
+    Копируется ВЕСЬ файл, включая шаблон: ассистент читает его целиком, а
+    вычитание шаблона — только способ понять, есть ли что мерить. Копия, а не
+    ссылка: каталог памяти, уводящий наружу дерева, CLI не читает.
+    """
+    src = os.path.join(src_home, "LEARNED.md")
+    if not os.path.isfile(src):
+        return None
+    with open(src, encoding="utf-8") as fh:
+        text = fh.read()
+    if not learned_beyond_template(text):
+        return None
+    dest = os.path.join(box, "LEARNED.md")
+    shutil.copyfile(src, dest)
+    return dest
+
+
+def memory_needle(text):
+    """Строка, по которой в стенограмме видно, что доехал ИМЕННО выученный слой.
+
+    Берётся из того, что ассистент ДОБАВИЛ: метка из шаблона нашлась бы в
+    стенограмме любой установки, включая ту, где он не узнал ничего.
+
+    Кавычка и обратная косая в JSONL не остаются собой, поэтому метка не имеет
+    права их содержать — иначе она не найдётся никогда.
+    """
+    added = learned_beyond_template(text)
+    if not added:
+        return None
+    tmpl = LEARNED_MD.strip()
+    best = None
+    for chunk in re.split(r'["\\\n]', added):
+        chunk = chunk.strip()
+        if len(chunk) < NEEDLE_MIN or chunk in tmpl:
+            continue
+        if best is None or len(chunk) > len(best):
+            best = chunk
+    return best
+
+
+def instruction_files(path):
+    """Файлы, подложенные CLI как инструкции: CLAUDE.md и его @-импорты.
+
+    Выученный слой едет не системным промптом, а @-импортом, и приезжает в
+    стенограмму отдельной записью attachment.type == "instructions".
+    """
+    files = []
+    with open(path, encoding="utf-8", errors="ignore") as fh:
+        for line in fh:
+            try:
+                d = json.loads(line)
+            except Exception:                 # noqa: BLE001 — битая строка это данные
+                continue
+            a = d.get("attachment")
+            if isinstance(a, dict) and a.get("type") == "instructions":
+                files.extend(f for f in (a.get("files") or []) if isinstance(f, dict))
+    return files
+
+
+def memory_delivered(session_id, needle):
+    """Доехал ли выученный слой до модели. Возвращает (bool, нота).
+
+    Провал здесь выглядит точь-в-точь как «выученный слой ничего не даёт»:
+    @-импорт не сработал, обе руки одинаковы, судья видит шум. Поэтому прогон,
+    у которого слой не доехал, — не проигрыш, а не-измерение.
+    """
+    if not needle:
+        return False, "нечего искать: выученный слой без собственных записей"
+    path = core.find_transcript(session_id)
+    if not path:
+        return False, "нет транскрипта %s: выученный слой не проверен" % session_id
+    for f in instruction_files(path):
+        if needle in (f.get("content") or ""):
+            return True, "выученный слой доехал: %s" % os.path.basename(
+                f.get("path") or "?")
+    return False, "выученный слой не доехал: метки нет среди инструкций"
+
+
+def parse_memory(specs, variants):
+    """Разобрать --memory имя=дом. Ошибка здесь дешевле прогона.
+
+    Опечатка в имени иначе молчит: рука уходит в прогон без выученного слоя, а
+    отчёт сравнивает две одинаковых и называет это вердиктом.
+    """
+    known = [v["name"] for v in variants]
+    out = {}
+    for spec in specs or ():
+        name, _, path = spec.partition("=")
+        name, path = name.strip(), path.strip()
+        if name not in known:
+            raise ValueError("нет варианта %r; есть: %s" % (name, ", ".join(known)))
+        if name in out:
+            raise ValueError("два выученных слоя для варианта %r" % (name,))
+        home = os.path.abspath(os.path.expanduser(path))
+        if not os.path.isdir(home):
+            raise ValueError("нет дома ассистента: %s" % home)
+        src = os.path.join(home, "LEARNED.md")
+        text = ""
+        if os.path.isfile(src):
+            with open(src, encoding="utf-8") as fh:
+                text = fh.read()
+        if not learned_beyond_template(text):
+            raise ValueError("нечего измерять: в %s только шаблон" % src)
+        out[name] = home
+    return out
+
+
 def run_variant(variant, case, run_dir, project, budget, attempt=1):
     box = sandbox_dir(run_dir, variant["name"], case["id"], attempt)
     os.makedirs(box, exist_ok=True)
@@ -156,6 +292,21 @@ def run_variant(variant, case, run_dir, project, budget, attempt=1):
         body = body.replace("{PROJECT}", project).replace("{HOME}", box).strip()
         write_variant_card(box, body)
 
+    # Выученный слой едет @-импортом из CLAUDE.md песочницы, не системным
+    # промптом. Метка снимается ДО запуска: по ней потом видно в стенограмме,
+    # доехал слой или рука осталась пустой.
+    memory_note, needle = "без выученного", None
+    if variant.get("memory"):
+        dest = copy_learned(variant["memory"], box)
+        if dest:
+            with open(dest, encoding="utf-8") as fh:
+                needle = memory_needle(fh.read())
+            with open(os.path.join(box, "CLAUDE.md"), "w", encoding="utf-8") as fh:
+                fh.write("@LEARNED.md\n")
+            memory_note = "с выученным"
+        else:
+            memory_note = "нечего измерять"
+
     argv = core.launch_argv(case["prompt"], project, disallowed_tools(), True,
                             budget, extra=["--output-format", "json"])
     res, err = core.run_claude(box, argv)
@@ -165,7 +316,7 @@ def run_variant(variant, case, run_dir, project, budget, attempt=1):
            "sandbox": box, "ok": ok, "prompt_ok": False,
            "prompt": case["prompt"], "answer": res.get("result", ""),
            "cost_usd": res.get("total_cost_usd"), "session_id": res.get("session_id"),
-           "error": note}
+           "error": note, "memory": memory_note}
 
     if rec["ok"] and body:
         rec["prompt_ok"], rec["prompt_note"] = prompt_delivered(rec["session_id"], body)
@@ -173,6 +324,9 @@ def run_variant(variant, case, run_dir, project, budget, attempt=1):
         # The control has no role to deliver; the case prompt went in on the
         # command line and the answer came back, so the run IS a measurement.
         rec["prompt_ok"], rec["prompt_note"] = True, "контроль — роль не доставляется"
+
+    if rec["ok"] and needle:
+        rec["memory_ok"], rec["memory_note"] = memory_delivered(rec["session_id"], needle)
     return rec
 
 
@@ -197,6 +351,8 @@ def cmd_run(argv):
     ap = argparse.ArgumentParser(prog="cckit-bench run")
     ap.add_argument("--cases", required=True)
     ap.add_argument("--project", required=True)
+    ap.add_argument("--memory", action="append", default=[],
+                    help="имя=дом — дать варианту копию его LEARNED.md")
     ap.add_argument("--variant", action="append", required=True,
                     help="имя=путь/к/ROLE.md, или имя=none для контроля")
     ap.add_argument("--runs", type=int, default=1)
@@ -211,6 +367,8 @@ def cmd_run(argv):
     try:
         cases = load_cases(os.path.expanduser(a.cases))
         variants = parse_variants(a.variant)
+    for name, home in parse_memory(a.memory, variants).items():
+        next(v for v in variants if v["name"] == name)["memory"] = home
     except (ValueError, OSError) as e:
         sys.stderr.write("%s\n" % e)
         return 2
