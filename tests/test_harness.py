@@ -1,6 +1,7 @@
 # Стенд, на котором стоит весь остальной набор. Если он лжёт — лжёт всё:
 # зелёный тест, где поддельный claude не вызывался, и песочница, утёкшая
 # в настоящий дом, выглядят одинаково успешными.
+import json
 import os
 import shutil
 import sys
@@ -104,9 +105,13 @@ class TestSandbox(unittest.TestCase):
     def test_a_subdirectory_of_the_temporary_directory_is_accepted(self):
         root = tempfile.mkdtemp(prefix="cckit-guard-ok-")
         self.addCleanup(shutil.rmtree, root, True)
+        # realpath на обеих сторонах: ограда возвращает именно тот путь, что
+        # признала безопасным, а на macOS mkdtemp отдаёт /var/... при
+        # настоящем /private/var/....
+        resolved = os.path.realpath(root)
         with Sandbox(root=root) as sb:
             self.assertTrue(os.path.isdir(sb.home))
-            self.assertTrue(sb.home.startswith(root + os.sep))
+            self.assertTrue(sb.home.startswith(resolved + os.sep), sb.home)
         self.assertFalse(os.path.exists(root), "песочница не убрала за собой")
 
     def test_projects_dir_follows_the_sandbox(self):
@@ -292,9 +297,9 @@ class TestSandboxGuardHoles(unittest.TestCase):
 
     # ── МЕЛКИЕ ──
 
-    def test_a_cleanup_that_did_not_clean_up_is_loud(self):
-        # ignore_errors=True глотает всё: симлинк вместо корня rmtree отвергает,
-        # и раньше выход об этом молчал, оставляя корень навсегда.
+    def test_a_symlink_root_is_refused_by_name(self):
+        # Симлинк вместо корня — это два разных дерева: проверяли бы цель,
+        # а rmtree и проверка остатка говорили бы о ссылке. Отказ по имени.
         target = self._tmpdir("cckit-link-target-")
         keep = os.path.join(target, "KEEP.md")
         with open(keep, "w", encoding="utf-8") as fh:
@@ -308,7 +313,7 @@ class TestSandboxGuardHoles(unittest.TestCase):
         sb.root = link
         with self.assertRaises(AssertionError) as cm:
             sb.__exit__(None, None, None)
-        self.assertIn("не убрана", str(cm.exception))
+        self.assertIn("ссылка", str(cm.exception))
         self.assertTrue(os.path.exists(keep), "rmtree прошёл сквозь симлинк")
 
     def test_exit_without_enter_is_a_no_op(self):
@@ -339,6 +344,218 @@ class TestSandboxGuardHoles(unittest.TestCase):
         with self.assertRaises(AssertionError) as cm:
             Sandbox(root=other)
         self.assertIn("дом", str(cm.exception))
+
+
+class TestOriginNotGeography(unittest.TestCase):
+    """Право на удаление даёт происхождение, а не адрес.
+
+    Прежняя ограда спрашивала «лежит ли корень во временном каталоге». Ответ
+    на этот вопрос целиком берётся из окружения: TMPDIR=/Users/Shared,
+    выставленный ДО старта процесса, делает якорем /Users/Shared, и
+    /Users/Shared/Adobe проходит любую заморозку — pwd знает про дом и ничего
+    не знает про /Users/Shared. Теперь вопрос другой: «этот каталог создала
+    песочница?» Пустой при входе плюс собственная метка — и никак иначе.
+
+    Жертвами везде служат каталоги во временном; «враждебный TMPDIR»
+    изображается подменой harness._ANCHOR, потому что настоящий якорь снят
+    при импорте.
+    """
+
+    def _tmpdir(self, prefix):
+        d = tempfile.mkdtemp(prefix=prefix)
+        self.addCleanup(shutil.rmtree, d, True)
+        return d
+
+    def _set_module_global(self, name, value):
+        missing = object()
+        old = getattr(harness, name, missing)
+        if old is missing:
+            self.addCleanup(lambda: delattr(harness, name))
+        else:
+            self.addCleanup(setattr, harness, name, old)
+        setattr(harness, name, value)
+
+    def test_a_populated_root_is_refused_however_the_anchor_was_set(self):
+        # Ровно случай /Users/Shared/Adobe: якорь объявлен родителем жертвы,
+        # то есть география говорит «можно». Каталог не пуст — этого хватает.
+        shared = self._tmpdir("cckit-shared-")
+        victim = os.path.join(shared, "Adobe")
+        os.makedirs(victim)
+        keep = os.path.join(victim, "License.txt")
+        with open(keep, "w", encoding="utf-8") as fh:
+            fh.write("чужая установка")
+        self._set_module_global("_ANCHOR", os.path.realpath(shared))
+
+        before = os.environ.get("HOME")
+        with self.assertRaises(AssertionError) as cm:
+            with Sandbox(root=victim):
+                pass
+        self.assertIn("не пуст", str(cm.exception))
+        self.assertTrue(os.path.exists(keep), "чужой каталог тронут")
+        self.assertEqual(sorted(os.listdir(victim)), ["License.txt"],
+                         "песочница что-то дописала в чужой каталог")
+        self.assertEqual(os.environ.get("HOME"), before,
+                         "окружение поехало до отказа")
+
+    def test_the_marker_is_written_into_the_root_on_entry(self):
+        with Sandbox() as sb:
+            p = os.path.join(sb.root, harness.MARKER)
+            self.assertTrue(os.path.isfile(p), "метки нет — удалять будет нечем")
+            with open(p, encoding="utf-8") as fh:
+                data = json.load(fh)
+            self.assertEqual(data["pid"], os.getpid())
+            self.assertIn("created", data)
+
+    def test_without_the_marker_the_exit_refuses_to_delete(self):
+        # Каталог во временном, не дом, якорь не при чём — по старым правилам
+        # его бы снесли. Метки нет: создан не песочницей.
+        alien = os.path.join(self._tmpdir("cckit-alien-"), "data")
+        os.makedirs(alien)
+        keep = os.path.join(alien, "KEEP.md")
+        with open(keep, "w", encoding="utf-8") as fh:
+            fh.write("чужие данные")
+
+        sb = Sandbox()
+        sb.__enter__()
+        self.addCleanup(shutil.rmtree, sb.root, True)
+        sb.root = alien
+        with self.assertRaises(AssertionError) as cm:
+            sb.__exit__(None, None, None)
+        self.assertIn("метк", str(cm.exception))
+        self.assertTrue(os.path.exists(keep), "каталог без метки был стёрт")
+
+    def test_a_marker_from_another_sandbox_is_not_a_licence(self):
+        # Метка есть, но чужая: её положила не эта песочница. Право на rmtree
+        # даёт не файл с правильным именем, а собственный опознавательный
+        # знак, записанный при входе.
+        alien = os.path.join(self._tmpdir("cckit-othermark-"), "data")
+        os.makedirs(alien)
+        keep = os.path.join(alien, "KEEP.md")
+        with open(keep, "w", encoding="utf-8") as fh:
+            fh.write("чужие данные")
+        with open(os.path.join(alien, harness.MARKER), "w", encoding="utf-8") as fh:
+            json.dump({"pid": os.getpid(), "token": "чужой", "created": 0}, fh)
+
+        sb = Sandbox()
+        sb.__enter__()
+        self.addCleanup(shutil.rmtree, sb.root, True)
+        sb.root = alien
+        with self.assertRaises(AssertionError) as cm:
+            sb.__exit__(None, None, None)
+        self.assertIn("метк", str(cm.exception))
+        self.assertTrue(os.path.exists(keep), "чужая метка сошла за свою")
+
+    def test_a_tilde_root_is_expanded_and_named_as_the_home(self):
+        # Раньше '~' оставалась буквой каталога: abspath клеил её к cwd, и
+        # ограда отвечала про совсем другой путь — то «принято», то «не
+        # временный», но никогда «это дом». Ничего не создаётся: только счёт.
+        with self.assertRaises(AssertionError) as cm:
+            harness.check_root(os.path.join("~", ".cckit", "assistants", "x"))
+        self.assertIn("дом", str(cm.exception))
+        self.assertNotIn("~", str(cm.exception), "тильда не раскрыта")
+
+    def test_an_unknown_user_tilde_is_refused_by_name(self):
+        with self.assertRaises(AssertionError) as cm:
+            harness.check_root("~cckit-no-such-user-42/x")
+        self.assertIn("тильда", str(cm.exception))
+
+
+class TestSandboxLifecycleHoles(unittest.TestCase):
+    """Дыры не в выборе корня, а в самом входе и выходе."""
+
+    def _tmpdir(self, prefix):
+        d = tempfile.mkdtemp(prefix=prefix)
+        self.addCleanup(shutil.rmtree, d, True)
+        return d
+
+    def test_a_second_enter_is_refused_so_the_real_environment_survives(self):
+        # Второй __enter__ перезаписывал _saved снимком УЖЕ подменённого
+        # окружения. Единственный __exit__ восстанавливал подделку: HOME
+        # оставался в стёртой песочнице, а поддельный claude — первым в PATH
+        # для всего процесса, вне всякого with.
+        before = {k: os.environ.get(k) for k in harness.VARS}
+        sb = Sandbox()
+        sb.__enter__()
+        self.addCleanup(shutil.rmtree, sb.root, True)
+        fake_bin = sb.bin
+        try:
+            with self.assertRaises(AssertionError) as cm:
+                sb.__enter__()
+            self.assertIn("повторный вход", str(cm.exception))
+        finally:
+            sb.__exit__(None, None, None)
+        self.assertEqual({k: os.environ.get(k) for k in harness.VARS}, before,
+                         "настоящее окружение потеряно")
+        self.assertNotIn(fake_bin, (os.environ.get("PATH") or "").split(os.pathsep),
+                         "поддельный claude остался в PATH навсегда")
+
+    def test_a_failure_inside_enter_leaves_no_trace(self):
+        # with НЕ зовёт __exit__, если __enter__ бросил. Шесть присваиваний
+        # os.environ стоят перед _install_fake(), который делает open() и
+        # chmod и может упасть на правах или на забитом диске.
+        seen = []
+
+        class Boom(Sandbox):
+            def _install_fake(self_inner):
+                seen.append(self_inner.root)
+                raise RuntimeError("нет прав на bin")
+
+        before = {k: os.environ.get(k) for k in harness.VARS}
+        sb = Boom()
+        with self.assertRaises(RuntimeError):
+            sb.__enter__()
+        self.assertEqual({k: os.environ.get(k) for k in harness.VARS}, before,
+                         "упавший вход утёк окружением навсегда")
+        self.assertEqual(len(seen), 1)
+        self.assertFalse(os.path.lexists(seen[0]),
+                         "упавший вход оставил корень на диске")
+        # И выход после такого входа обязан молчать, а не падать и не удалять.
+        self.assertIs(sb.__exit__(None, None, None), False)
+
+    def test_state_and_bin_cannot_be_pointed_at_a_foreign_directory(self):
+        alien = self._tmpdir("cckit-attr-")
+        sb = Sandbox()
+        sb.__enter__()
+        try:
+            with self.assertRaises(AttributeError):
+                sb.state = alien
+            with self.assertRaises(AttributeError):
+                sb.bin = alien
+            real_root = sb.root
+            sb.root = alien
+            for name in ("state", "bin", "home", "project"):
+                with self.assertRaises(AssertionError, msg=name):
+                    getattr(sb, name)
+            sb.root = real_root
+        finally:
+            sb.__exit__(None, None, None)
+        self.assertEqual(os.listdir(alien), [],
+                         "песочница писала в подменённый каталог")
+
+    def test_check_root_returns_the_path_it_judged(self):
+        # Решали по realpath, возвращали abspath — и наружу уходил путь,
+        # который проверки не видели ни разу.
+        base = self._tmpdir("cckit-return-")
+        real = os.path.join(base, "real")
+        os.makedirs(real)
+        link = os.path.join(base, "link")
+        os.symlink(real, link)
+        asked = os.path.join(link, "inner")
+        got = harness.check_root(asked)
+        self.assertEqual(got, os.path.join(os.path.realpath(real), "inner"))
+        self.assertEqual(got, os.path.realpath(got), "вернулся не разрешённый путь")
+
+    def test_a_root_that_survived_as_a_dangling_symlink_is_loud(self):
+        # os.path.exists идёт ПО ссылке: висячий симлинк пережил бы уборку, а
+        # exists() сказал бы False, и выход промолчал бы.
+        d = self._tmpdir("cckit-dangling-")
+        link = os.path.join(d, "root")
+        os.symlink(os.path.join(d, "no-such-target"), link)
+        self.assertFalse(os.path.exists(link), "цель ссылки существует — нечего проверять")
+        with self.assertRaises(AssertionError) as cm:
+            Sandbox._assert_gone(link)
+        self.assertIn("не убрана", str(cm.exception))
+
 
 if __name__ == "__main__":
     unittest.main()
