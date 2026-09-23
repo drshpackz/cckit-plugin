@@ -22,4 +22,4 @@ leaving the sandbox, overspending, hiring a new one.
 | find one someone published | `cckit:find-agent` |
 
 `cckit assistant list` shows who is here. Do it yourself when it is one
-question with one answer: an assistant costs a cold start.
+question, one answer: an assistant costs a cold start.

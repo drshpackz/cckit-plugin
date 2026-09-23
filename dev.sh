@@ -69,16 +69,21 @@ PY
         | python3 -c "import json,sys;d=json.load(sys.stdin);assert d['additional_context']" 2>/dev/null \
         && good "хук отдаёт валидный JSON" || bad "хук не отдал валидный JSON"
 
-    # No absolute paths from this machine in what SHIPS: they are what makes a
-    # plugin unportable. docs/ is exempt — plans quote the commands that were
-    # actually run on this machine, and rewriting them would be a lie.
+    # Ни одного домашнего пути в том, что ПОСТАВЛЯЕТСЯ — это и делает плагин
+    # непереносимым. Проверяется отслеживаемое, а не всё на диске: артефакты
+    # прогонов (evals/results, песочницы) несут абсолютные пути по своей
+    # природе и в поставку не едут. docs/ освобождён — планы цитируют команды,
+    # которые правда выполнялись на этой машине, и переписать их значило бы
+    # соврать. Ищется ДОМ ТОГО, КТО СОБИРАЕТ ($HOME), а не любой путь вида
+    # /Users/...: под второе попадает /Users/Shared/Adobe из комментария,
+    # объясняющего ограду, и ворота начинают ругаться на документацию.
     hardpaths() {
-        grep -rIl "/Users/m1" "$ROOT" \
-            --exclude-dir=.git --exclude-dir=docs --exclude-dir=.github \
-            2>/dev/null | grep -v dev.sh
+        git -C "$ROOT" ls-files -z 2>/dev/null \
+            | grep -zv '^docs/' | grep -zv '^dev\.sh$' \
+            | xargs -0 grep -lIF "$HOME/" 2>/dev/null
     }
     if hardpaths | head -3 | grep -q .; then
-        bad "встретились пути /Users/m1 — плагин не переносим:"
+        bad "домашние пути в поставляемом — плагин непереносим:"
         hardpaths | sed 's|.*|    &|'
     else
         good "жёстких путей нет"
