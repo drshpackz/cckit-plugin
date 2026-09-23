@@ -141,6 +141,61 @@ def abs_rule(tool, path):
     return "%s(//%s)" % (tool, path.lstrip("/"))
 
 
+# Запрещается и то, чего в проекте нет: имена встречаются почти везде, а
+# промах тут стоит дорого.
+UNIVERSAL_DENY = (".git/**", ".claude/**", ".claude.json", ".env", ".env.*",
+                  "CLAUDE.md", "AGENTS.md", "GEMINI.md", ".ssh/**", "id_rsa",
+                  ".npmrc", ".netrc")
+DENY_DEPTH = 6
+
+
+def project_denies(project, writes):
+    """Запреты считаются ИЗ ПРОЕКТА, а не из памяти о чужом.
+
+    Прежняя версия перечисляла src/, extensions/, build/ — папки VS Code. В
+    репозитории на Django таких имён нет, а настоящие (app/, manage.py,
+    migrations/) не названы нигде. При `bypassPermissions` путь, который не
+    разрешён и не запрещён, проходит МОЛЧА — значит ограда стояла вокруг
+    пустого места, и выглядела при этом как ограда.
+
+    Обход идёт по дереву и запрещает на каждом уровне всё, кроме того, что
+    лежит НА ПУТИ к выданному: для writes ["docs/api/**"] запрещаются все
+    соседи docs, потом все соседи api внутри docs, и на этом обход
+    останавливается.
+    """
+    granted = [w.strip().strip("/").rstrip("*").rstrip("/") for w in (writes or [])]
+    granted = [g for g in granted if g]
+    out = []
+
+    def walk(rel, depth):
+        if depth > DENY_DEPTH:
+            return
+        base = os.path.join(project, rel) if rel else project
+        try:
+            names = sorted(os.listdir(base))
+        except OSError:                    # нет доступа — нечего и перечислять
+            return
+        for n in names:
+            sub = (rel + "/" + n) if rel else n
+            inside_granted = any(sub == g or sub.startswith(g + "/") for g in granted)
+            if inside_granted:
+                continue                   # выдано — не запрещаем
+            on_the_way = any(g.startswith(sub + "/") for g in granted)
+            if on_the_way:
+                walk(sub, depth + 1)       # дальше запрещаем соседей глубже
+                continue
+            out.append(sub + "/**" if os.path.isdir(os.path.join(base, n)) else sub)
+
+    walk("", 0)
+    for u in UNIVERSAL_DENY:
+        head = u.rstrip("*").rstrip("/")
+        if u in out or any(head == g or head.startswith(g + "/") for g in granted):
+            continue
+        if u not in out:
+            out.append(u)
+    return out
+
+
 def compile_settings(card, project, home, role, granted=None):
     access = card.get("access", "read-only")
     writes = card.get("writes", []) or []
@@ -153,9 +208,8 @@ def compile_settings(card, project, home, role, granted=None):
     for w in writes:
         allow.append(abs_rule("Edit", project.rstrip("/") + "/" + w.lstrip("/")))
 
-    deny = [abs_rule("Edit", project + "/" + d) for d in
-            ("src/**", "extensions/**", "build/**", ".claude/**", "CLAUDE.md")
-            if not any(w.rstrip("/*").startswith(d.rstrip("/*")) for w in writes)]
+    deny = [abs_rule("Edit", project.rstrip("/") + "/" + d)
+            for d in project_denies(project, writes)]
     # No shell unless it was granted: `rg --pre=CMD` and `git -c core.pager=CMD`
     # are arbitrary code execution around every path rule above. Granting it has
     # to reach this file too, or `--grant shell` reports a success that cannot
@@ -439,6 +493,12 @@ LEARNED_MD = """# Что я узнал на этом проекте
 а не стирается.
 
 ---
+
+## Пример записи — сотри, когда появится первая настоящая
+
+**Статус: гипотеза** (2026-09-23).
+
+Читать артборд раньше `specs.md`, возможно, экономит проход. Не мерено.
 """
 
 
