@@ -23,14 +23,35 @@ import uuid
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from cckit_core import (HOME, LINK_VARS, MEMORY_BLOCK,  # noqa: E402
+from cckit_core import (LINK_VARS, MEMORY_BLOCK,  # noqa: E402
                         find_transcript, isolated_env, projects_dir,
                         run_claude, system_prompt_parts)
 from cckit_core import launch_argv as core_launch_argv  # noqa: E402
 
-LIB = os.environ.get("CCKIT_LIBRARY", os.path.join(HOME, ".cckit", "library"))
-ROOT = os.path.join(HOME, ".cckit", "assistants")
-CLAUDE_JSON = os.path.join(HOME, ".claude.json")
+
+# The three roots the installer writes to. Functions, like `projects_dir()`,
+# and for the same reason: computed at import they would freeze the home of the
+# process that imported this module, so a test that moves HOME would still
+# install into the owner's real ~/.cckit — on top of a live assistant.
+def _cckit_dir():
+    # `home` is the assistant's own home everywhere else in this file, so the
+    # real one is spelled out here rather than imported under that name.
+    return os.path.join(os.path.expanduser("~"), ".cckit")
+
+
+def library_dir():
+    """Where roles live. CCKIT_LIBRARY wins, and it too is read per call."""
+    return os.environ.get("CCKIT_LIBRARY") or os.path.join(_cckit_dir(), "library")
+
+
+def assistants_dir():
+    """Where installed instances live."""
+    return os.path.join(_cckit_dir(), "assistants")
+
+
+def claude_json():
+    """The CLI's own config, where a workspace is marked trusted."""
+    return os.path.join(os.path.expanduser("~"), ".claude.json")
 
 # Frontmatter keys Claude Code actually reads. Every other key is a silent
 # no-op: `appendSystemPrompt` is never parsed, `permissionMode` never reaches
@@ -255,13 +276,13 @@ def check_owner_rule(home, cap):
 def trust(paths):
     """An untrusted workspace silently voids allow rules and extra dirs."""
     try:
-        data = json.load(open(CLAUDE_JSON, encoding="utf-8"))
+        data = json.load(open(claude_json(), encoding="utf-8"))
     except Exception:
         data = {}
     data.setdefault("projects", {})
     for p in paths:
         data["projects"].setdefault(p, {})["hasTrustDialogAccepted"] = True
-    json.dump(data, open(CLAUDE_JSON, "w", encoding="utf-8"), indent=2)
+    json.dump(data, open(claude_json(), "w", encoding="utf-8"), indent=2)
 
 
 def run_assistant(home, project, prompt, budget="0.60"):
@@ -408,14 +429,14 @@ def instance_home(role, project):
     by a DIFFERENT project.
     """
     base = "%s@%s" % (role, os.path.basename(project))
-    cand = os.path.join(ROOT, base)
+    cand = os.path.join(assistants_dir(), base)
     meta = os.path.join(cand, "instance.json")
     if os.path.isdir(cand) and os.path.exists(meta):
         try:
             if json.load(open(meta, encoding="utf-8")).get("project") != project:
                 import hashlib
                 h = hashlib.sha256(project.encode()).hexdigest()[:6]
-                return os.path.join(ROOT, "%s-%s" % (base, h))
+                return os.path.join(assistants_dir(), "%s-%s" % (base, h))
         except Exception:
             pass
     return cand
@@ -459,10 +480,10 @@ def cmd_install(argv):
     project = os.path.abspath(os.path.expanduser(project)).rstrip("/")
     if not os.path.isdir(project):
         die("нет такой папки проекта: " + project)
-    if (project + "/").startswith(ROOT + "/"):
+    if (project + "/").startswith(assistants_dir() + "/"):
         die("проект лежит внутри дома ассистента — так нельзя")
 
-    rdir = os.path.join(LIB, role)
+    rdir = os.path.join(library_dir(), role)
     card = load_card(os.path.join(rdir, "card.yaml"))
     role_md = os.path.join(rdir, "ROLE.md")
     if not os.path.exists(role_md):
@@ -528,11 +549,11 @@ def cmd_install(argv):
 
 
 def instances():
-    if not os.path.isdir(ROOT):
+    if not os.path.isdir(assistants_dir()):
         return []
     out = []
-    for name in sorted(os.listdir(ROOT)):
-        p = os.path.join(ROOT, name, "instance.json")
+    for name in sorted(os.listdir(assistants_dir())):
+        p = os.path.join(assistants_dir(), name, "instance.json")
         if os.path.exists(p):
             try:
                 out.append(json.load(open(p, encoding="utf-8")))
@@ -629,7 +650,7 @@ def cmd_grant(argv, revoking=False):
     granted = set(it.get("granted") or BASE_CAPS)
     granted = (granted - caps) if revoking else (granted | caps)
     granted = apply_owner_rules(it["home"], granted)
-    card = load_card(os.path.join(LIB, it["role"], "card.yaml"))
+    card = load_card(os.path.join(library_dir(), it["role"], "card.yaml"))
     write_launch_json(it["home"], it["role"], it["project"], granted, card.get("budget_usd"))
     it["granted"] = sorted(granted)
     save_instance(it)
@@ -658,7 +679,7 @@ def cmd_owner_rule(argv):
     with open(os.path.join(it["home"], "OWNER-RULES.json"), "w", encoding="utf-8") as fh:
         json.dump(rules, fh, indent=1, ensure_ascii=False)
     granted = apply_owner_rules(it["home"], set(it.get("granted") or BASE_CAPS))
-    card = load_card(os.path.join(LIB, it["role"], "card.yaml"))
+    card = load_card(os.path.join(library_dir(), it["role"], "card.yaml"))
     write_launch_json(it["home"], it["role"], it["project"], granted, card.get("budget_usd"))
     it["granted"] = sorted(granted)
     save_instance(it)
@@ -674,8 +695,8 @@ def cmd_reset(argv):
     it = find_instance(argv[0])
     hard = "--hard" in argv
     home, project, role = it["home"], it["project"], it["role"]
-    card = load_card(os.path.join(LIB, role, "card.yaml"))
-    body = render_role_body(os.path.join(LIB, role, "ROLE.md"), project, home)
+    card = load_card(os.path.join(library_dir(), role, "card.yaml"))
+    body = render_role_body(os.path.join(library_dir(), role, "ROLE.md"), project, home)
     write_card(home, role, card, body)
     granted = apply_owner_rules(home, set(it.get("granted") or BASE_CAPS))
     write_launch_json(home, role, project, granted, card.get("budget_usd"))
@@ -688,7 +709,7 @@ def cmd_reset(argv):
                                   writes=", ".join("`%s`" % w for w in writes)))
     kept = ["LEARNED.md", "memory/", "OWNER-RULES.json"]
     if hard:
-        attic = os.path.join(ROOT, ".attic", os.path.basename(home), now().replace(":", "-"))
+        attic = os.path.join(assistants_dir(), ".attic", os.path.basename(home), now().replace(":", "-"))
         os.makedirs(attic, exist_ok=True)
         for name in ("LEARNED.md", "memory", "OWNER-RULES.json"):
             src = os.path.join(home, name)

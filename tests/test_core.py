@@ -2,6 +2,7 @@
 # именно то, что разъехалось однажды: ограду запуска и чтение транскрипта.
 import json
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -46,10 +47,56 @@ class TestInstallerWrapper(unittest.TestCase):
              "Write", "--strict-mcp-config"])
 
 
+class TestClaudeIsFound(unittest.TestCase):
+    """`claude` на Windows — это npm-шим claude.cmd, а subprocess запускает
+    через CreateProcess, который дописывает только '.exe' и PATHEXT не смотрит:
+    голое имя там не находится вовсе. Поэтому имя резолвится через
+    shutil.which (он PATHEXT читает) и уходит в запуск абсолютным путём.
+
+    Сам PATHEXT с macOS не проверить. Проверяется вторая половина того же
+    исправления, наблюдаемая и здесь: имя разрешает вызывающая сторона, один
+    раз и в абсолютный путь, — а не execvp уже внутри ребёнка, у которого свой
+    cwd."""
+
+    def _shim(self, mark):
+        d = tempfile.mkdtemp(prefix="cckit-test-")
+        self.addCleanup(shutil.rmtree, d, True)
+        out = os.path.join(d, "who")
+        with open(os.path.join(d, "claude"), "w", encoding="utf-8") as fh:
+            fh.write('#!/bin/sh\nprintf %%s %s > "%s"\nprintf {}\n' % (mark, out))
+        os.chmod(os.path.join(d, "claude"), 0o755)
+        return d, out
+
+    def test_the_name_is_resolved_by_the_caller_not_by_the_child(self):
+        mine, mine_out = self._shim("MINE")
+        theirs, theirs_out = self._shim("THEIRS")
+        self.addCleanup(os.chdir, os.getcwd())
+        self.addCleanup(os.environ.__setitem__, "PATH", os.environ.get("PATH", ""))
+        os.chdir(mine)
+        os.environ["PATH"] = "."          # разрешается от cwd — чьего?
+
+        res, err = core.run_claude(theirs, ["claude", "-p", "q"])
+        self.assertEqual((res, err), ({}, None))
+        self.assertTrue(os.path.exists(mine_out), "запустился не тот claude")
+        self.assertFalse(os.path.exists(theirs_out),
+                         "имя разрешил ребёнок в своём cwd — как до починки")
+
+    def test_a_missing_claude_is_a_sentence_not_a_traceback(self):
+        res, err = core.run_claude(tempfile.gettempdir(), ["cckit-no-such-claude"])
+        self.assertIsNone(res)
+        self.assertIn("не найден в PATH", err)
+
+
 class TestTranscript(unittest.TestCase):
+    def _transcript_dir(self):
+        # Каталог живёт ровно до конца теста: набор, оставляющий мусор в
+        # $TMPDIR, засоряет машину владельца на каждом прогоне.
+        d = tempfile.mkdtemp(prefix="cckit-test-")
+        self.addCleanup(shutil.rmtree, d, True)
+        return d
+
     def test_system_prompt_parts_reads_the_snapshot(self):
-        d = tempfile.mkdtemp()
-        p = os.path.join(d, "s.jsonl")
+        p = os.path.join(self._transcript_dir(), "s.jsonl")
         with open(p, "w", encoding="utf-8") as fh:
             fh.write(json.dumps({"type": "user", "content": "x"}) + "\n")
             fh.write(json.dumps({"type": "attachment", "attachment": {
@@ -57,8 +104,7 @@ class TestTranscript(unittest.TestCase):
         self.assertEqual(core.system_prompt_parts(p), ["BODY", "more"])
 
     def test_system_prompt_parts_returns_none_without_a_snapshot(self):
-        d = tempfile.mkdtemp()
-        p = os.path.join(d, "s.jsonl")
+        p = os.path.join(self._transcript_dir(), "s.jsonl")
         with open(p, "w", encoding="utf-8") as fh:
             fh.write(json.dumps({"type": "user"}) + "\n")
         self.assertIsNone(core.system_prompt_parts(p))

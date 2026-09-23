@@ -8,9 +8,8 @@ published plugin — with an ungated shell.
 
 import json
 import os
+import shutil
 import subprocess
-
-HOME = os.path.expanduser("~")
 
 # What the CLI appends after the role body when the card declares memory.
 MEMORY_BLOCK = "# Persistent Agent Memory"
@@ -52,7 +51,21 @@ def launch_argv(prompt, project, disallowed, strict_mcp, budget, extra=None):
 
 
 def run_claude(cwd, argv, timeout=600):
-    """Returns the parsed `--output-format json` result, or an error string."""
+    """Returns the parsed `--output-format json` result, or an error string.
+
+    argv[0] is resolved through `shutil.which` first. On Windows the real
+    `claude` is an npm shim named `claude.cmd`, and subprocess launches through
+    CreateProcess, which appends only '.exe' and never consults PATHEXT — so a
+    bare 'claude' is not found there at all. `shutil.which` does read PATHEXT,
+    and an absolute argv[0] costs nothing on POSIX.
+    """
+    name = argv[0] if argv else "claude"
+    exe = shutil.which(name)
+    if not exe:
+        return None, "claude не найден в PATH: %s" % name
+    # abspath because `which` returns the hit as it found it: a relative PATH
+    # entry yields a relative path, and the child runs with a different cwd.
+    argv = [os.path.abspath(exe)] + list(argv[1:])
     try:
         p = subprocess.run(argv, cwd=cwd, env=isolated_env(),
                            capture_output=True, text=True, timeout=timeout)
@@ -61,12 +74,18 @@ def run_claude(cwd, argv, timeout=600):
         return None, str(e)
 
 
+def home():
+    """Per call, never a module constant: a frozen HOME keeps pointing at the
+    owner's real home for the whole of a test run, and the installer writes
+    where it points."""
+    return os.path.expanduser("~")
+
+
 def projects_dir():
     """Per call, not per import: a module that froze this at import time would
     keep reading the real home for the whole test run — and, in a long-lived
     process, would miss a CLAUDE_CONFIG_DIR set after startup."""
-    base = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(
-        os.path.expanduser("~"), ".claude")
+    base = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(home(), ".claude")
     return os.path.join(base, "projects")
 
 
