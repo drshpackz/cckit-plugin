@@ -367,8 +367,8 @@ def cmd_run(argv):
     try:
         cases = load_cases(os.path.expanduser(a.cases))
         variants = parse_variants(a.variant)
-    for name, home in parse_memory(a.memory, variants).items():
-        next(v for v in variants if v["name"] == name)["memory"] = home
+        for name, home in parse_memory(a.memory, variants).items():
+            next(v for v in variants if v["name"] == name)["memory"] = home
     except (ValueError, OSError) as e:
         sys.stderr.write("%s\n" % e)
         return 2
