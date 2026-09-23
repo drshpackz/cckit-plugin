@@ -971,12 +971,19 @@ def cmd_run(argv):
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
-        print('cckit assistant run <экземпляр> "задание" [--budget N] [--timeout СЕК]\n'
-              "cckit assistant install <роль> --project DIR [--grant a,b] [--i-mean-it] [--force]\n"
-              "cckit assistant list [--all] [--json] · tree · show <экз> · where <экз> [--path]\n"
-              "cckit assistant grant|revoke <экз> <возможности> [--i-mean-it] [--override-owner-rule]\n"
-              'cckit assistant owner-rule <экз> deny <возможность> "дословные слова владельца"\n'
-              "cckit assistant reset <экз> [--hard]\n\n"
+        # Одна строка на глагол, полной формой. Раньше tree, show и where
+        # прятались за интерпунктами внутри строки про list: команда, которую
+        # не видно в справке, для человека не существует.
+        print("cckit assistant install <роль> --project DIR [--grant a,b] [--i-mean-it] [--force]\n"
+              'cckit assistant run <экземпляр> "задание" [--budget N] [--timeout СЕК]\n'
+              "cckit assistant list [--all] [--json]\n"
+              "cckit assistant tree\n"
+              "cckit assistant show <экземпляр>\n"
+              "cckit assistant where <экземпляр> [--path]\n"
+              "cckit assistant grant <экземпляр> <возможности> [--i-mean-it]\n"
+              "cckit assistant revoke <экземпляр> <возможности>\n"
+              'cckit assistant owner-rule <экземпляр> deny <возможность> "слова владельца"\n'
+              "cckit assistant reset <экземпляр> [--hard]\n\n"
               "возможности: " + ", ".join(sorted(CAPS)) + "\n"
               "за песочницу выводят: " + ", ".join(sorted(DANGEROUS)))
         return 2

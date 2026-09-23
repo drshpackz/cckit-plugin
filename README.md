@@ -36,6 +36,21 @@ delivered system prompt to the role body. Until both probes pass, nothing is
 reported as installed. A role you downloaded gets the same treatment as your
 own.
 
+## Giving it work
+
+```
+cckit assistant install design-scout --project .
+cckit assistant run design-scout@myrepo "какой настройкой задаётся X, дай path:line"
+```
+
+`run` executes the assistant synchronously from its own home, through its own
+`launch.json` — the same path the install probes take. Inspect with
+`cckit assistant list`, `cckit assistant tree`, `cckit assistant show <id>` and
+`cckit assistant where <id>`; change what it may do with
+`cckit assistant grant` and `cckit assistant revoke`, and pin a decision of
+your own with
+`cckit assistant owner-rule`, which outranks the agent.
+
 ## Measure a change instead of believing it
 
 A bench ships with the plugin. Point it at two versions of a role and it runs

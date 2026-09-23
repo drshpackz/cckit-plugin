@@ -9,6 +9,7 @@
 #
 # Проверяется не «работает ли функция», а «есть ли глагол».
 import io
+import re
 import os
 import sys
 import unittest
@@ -33,20 +34,60 @@ def call(argv):
     return rc, out.getvalue()
 
 
-class TestTheVerbsExist(unittest.TestCase):
-    """Глагол, которого нет в справке, человек не найдёт никогда."""
+PROMISE_FILES = ["README.md"] + [
+    os.path.join("skills", d, "SKILL.md")
+    for d in sorted(os.listdir(os.path.join(PLUGIN, "skills")))
+]
+VERB = re.compile(r"cckit assistant ([a-z][a-z-]+)")
 
-    def test_every_verb_a_stranger_needs_is_offered(self):
-        rc, out = call([])
-        for verb in ("install", "run", "list", "reset"):
-            self.assertIn(verb, out, "в справке нет глагола «%s»" % verb)
 
-    def test_the_help_shows_how_to_give_work_not_only_how_to_install(self):
-        # Обвязка вокруг главного действия выглядит как работа. Здесь
-        # проверяется само действие.
-        _, out = call([])
-        self.assertIn("run", out.split("\n")[0].lower() + out,
-                      "справка не называет, чем ассистенту дают работу")
+def promised_verbs():
+    """Глаголы, которые продукт обещает — из README и скиллов, а не из списка,
+    напечатанного руками.
+
+    Прежняя версия перебирала ("install", "run", "list", "reset") — то есть
+    ОПЯТЬ список, и следующий пропущенный глагол она бы не поймала по той же
+    причине, по которой никто не поймал отсутствие `run`. Сторож, растущий
+    вместе с обещаниями, сходится: пообещал в README — получил проверку.
+    """
+    found = {}
+    for rel in PROMISE_FILES:
+        path = os.path.join(PLUGIN, rel)
+        if not os.path.isfile(path):
+            continue
+        with open(path, encoding="utf-8") as fh:
+            for verb in VERB.findall(fh.read()):
+                found.setdefault(verb, []).append(rel)
+    return found
+
+
+def cli_verbs():
+    """Глаголы, которые CLI печатает в собственной справке."""
+    _, out = call([])
+    return set(VERB.findall(out))
+
+
+class TestPromisesAndVerbs(unittest.TestCase):
+    def test_every_verb_the_product_promises_exists_in_the_cli(self):
+        cli = cli_verbs()
+        missing = {v: where for v, where in promised_verbs().items() if v not in cli}
+        self.assertEqual(missing, {},
+                         "обещано в документации, но в CLI нет: %r" % (missing,))
+
+    def test_every_verb_the_cli_offers_is_promised_somewhere(self):
+        # Обратная сторона: команда, о которой нигде не написано, человеку не
+        # найдётся. Это не так страшно, как отсутствующая, но это тоже разрыв
+        # между тем, что есть, и тем, что обещано.
+        promised = set(promised_verbs())
+        orphan = sorted(v for v in cli_verbs() if v not in promised)
+        self.assertEqual(orphan, [],
+                         "есть в CLI, но нигде не обещано: %s" % orphan)
+
+    def test_the_promise_scan_actually_finds_something(self):
+        # Регулярное выражение, переставшее совпадать, обнулило бы обе проверки
+        # молча — и они остались бы зелёными навсегда.
+        self.assertGreaterEqual(len(promised_verbs()), 4,
+                                "сканер обещаний ничего не нашёл — он сломан")
 
 
 class TestColdPath(unittest.TestCase):
