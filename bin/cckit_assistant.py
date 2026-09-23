@@ -18,16 +18,19 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import sys
 import uuid
 from datetime import datetime, timezone
 
-HOME = os.path.expanduser("~")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from cckit_core import (HOME, LINK_VARS, MEMORY_BLOCK, PROJECTS,  # noqa: E402
+                        find_transcript, isolated_env, run_claude,
+                        system_prompt_parts)
+from cckit_core import launch_argv as core_launch_argv  # noqa: E402
+
 LIB = os.environ.get("CCKIT_LIBRARY", os.path.join(HOME, ".cckit", "library"))
 ROOT = os.path.join(HOME, ".cckit", "assistants")
 CLAUDE_JSON = os.path.join(HOME, ".claude.json")
-PROJECTS = os.path.join(HOME, ".claude", "projects")
 
 # Frontmatter keys Claude Code actually reads. Every other key is a silent
 # no-op: `appendSystemPrompt` is never parsed, `permissionMode` never reaches
@@ -81,10 +84,6 @@ def caps_to_disallowed(granted):
         if name not in granted:
             off.extend(tools)
     return sorted(set(off))
-
-
-# What the CLI appends after the role body when the card declares memory.
-MEMORY_BLOCK = "# Persistent Agent Memory"
 
 
 def die(msg, code=2):
@@ -193,37 +192,15 @@ def write_card(home, role, card, body):
     return path
 
 
-# The seven session-linking variables a child `claude -p` inherits. With them
-# the assistant joins the owner's session network, sees every live session and
-# can write to them without asking (measured 2026-09-23). Stripped in Python
-# rather than with `env -u`, which exists only on POSIX.
-LINK_VARS = ("CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN",
-             "CLAUDE_CODE_SESSION_ID", "CLAUDE_PID", "CLAUDE_CODE_CHILD_SESSION",
-             "CLAUDE_CODE_SESSION_ATTENDED", "CLAUDE_CODE_ENTRYPOINT")
-
-
-def isolated_env():
-    env = dict(os.environ)
-    for v in LINK_VARS:
-        env.pop(v, None)
-    env["CLAUDE_CODE_HARBOR_KITE"] = "0"
-    return env
-
-
 def launch_argv(home, project, prompt, granted, budget, extra=None):
     """The exact command an instance runs under. Built here, in one place, so
-    the probe exercises what the assistant really gets — on every platform."""
-    argv = ["claude", "-p", prompt, "--add-dir", project,
-            "--max-budget-usd", str(budget or "1.00")]
-    off = caps_to_disallowed(granted)
-    if off:
-        argv.append("--disallowedTools")
-        argv.extend(off)
-    if "mcp" not in granted:
-        argv.append("--strict-mcp-config")
-    if extra:
-        argv.extend(extra)
-    return argv
+    the probe exercises what the assistant really gets — on every platform.
+
+    Capability groups stop here: the argv itself is assembled by cckit_core,
+    which the bench shares, so a fix to the fence cannot land in one copy only.
+    """
+    return core_launch_argv(prompt, project, caps_to_disallowed(granted),
+                            "mcp" not in granted, budget, extra=extra)
 
 
 def write_launch_json(home, role, project, granted, budget):
@@ -298,11 +275,9 @@ def run_assistant(home, project, prompt, budget="0.60"):
         argv = launch_argv(home, rec["project"], prompt, set(rec["granted"]),
                            rec.get("budget_usd") or budget,
                            extra=["--output-format", "json"])
-        p = subprocess.run(argv, cwd=home, env=isolated_env(),
-                           capture_output=True, text=True, timeout=600)
-        return json.loads(p.stdout or "{}"), None
     except Exception as e:
         return None, str(e)
+    return run_claude(home, argv)
 
 
 def probe_containment(home, project):
@@ -357,29 +332,11 @@ def probe_prompt(home, project, body):
     if err or not res:
         return "не запускалась", err or "нет ответа"
     sid = res.get("session_id")
-    # The project directory name is the cwd with every non-alphanumeric
-    # character replaced by a dash — but rather than reproduce that rule and
-    # depend on it, find the transcript by session id wherever it landed.
-    path = None
-    if sid and os.path.isdir(PROJECTS):
-        want = str(sid) + ".jsonl"
-        for d in os.listdir(PROJECTS):
-            cand = os.path.join(PROJECTS, d, want)
-            if os.path.exists(cand):
-                path = cand
-                break
+    path = find_transcript(sid)
     if not path:
         return "не найдено", "нет транскрипта сессии %s под %s" % (sid, PROJECTS)
-    parts = None
-    for line in open(path, encoding="utf-8", errors="ignore"):
-        try:
-            d = json.loads(line)
-        except Exception:
-            continue
-        a = d.get("attachment")
-        if isinstance(a, dict) and a.get("type") == "prompt_snapshot":
-            parts = a.get("systemPrompt")
-    if not isinstance(parts, list) or not parts:
+    parts = system_prompt_parts(path)
+    if not parts:
         return "не найдено", "в транскрипте нет prompt_snapshot"
     first = parts[0] if isinstance(parts[0], str) else json.dumps(parts[0], ensure_ascii=False)
     first = first.strip()
