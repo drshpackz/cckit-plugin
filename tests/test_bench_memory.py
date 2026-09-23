@@ -135,14 +135,22 @@ class TestNothingToMeasure(Tmp):
 
     def test_a_live_learned_file_with_a_record_is_something_to_measure(self):
         # На настоящих файлах владельца, только чтение. Критерий здесь другой —
-        # «есть заголовок записи» — и он ловит то, чего синтетика не ловит:
+        # «есть запись СВЕРХ шаблона» — и он ловит то, чего синтетика не ловит:
         # вычитание шаблона, съевшее вместе с ним и записи.
+        #
+        # Раньше критерием было «есть заголовок ##», и тест краснел от свежей
+        # установки: в шаблоне установщика есть «## Пример записи». Два разных
+        # определения одного свойства — у теста и у кода — расходятся ровно
+        # тогда, когда шаблон меняется.
+        tmpl = LEARNED_MD.strip()
         found = []
         for p in sorted(glob.glob(os.path.expanduser(
                 "~/.cckit/assistants/*/LEARNED.md"))):
             with open(p, encoding="utf-8") as fh:
-                text = fh.read()
-            if "\n## " in text:
+                text = fh.read().strip()
+            if text.startswith(tmpl):
+                text = text[len(tmpl):]
+            if "\n## " in text or text.strip():
                 found.append(os.path.dirname(p))
         if not found:
             self.skipTest("на этой машине нет ассистента с записями в LEARNED.md")
