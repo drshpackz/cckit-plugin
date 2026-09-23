@@ -108,11 +108,13 @@ typed while looking at theirs. Installing into a Django tree denies `app/`,
   machine, from a fresh clone, with no checkout, no personal CLI and no
   `claude` installed. That second run is what proves the published thing is
   self-sufficient.
-- **Not proven:** Linux and Windows. A three-platform matrix is committed in
+- **Proven on Linux:** the whole suite on Ubuntu 22.04 x86_64, from a fresh
+  clone, on both the distro's Python 3.10 and the declared floor, 3.9.25.
+- **Not proven: Windows.** A three-platform matrix is committed in
   `.github/workflows/test.yml` and has never executed. Windows-specific logic
-  is exercised by injection (path separators, `PATHEXT` resolution, the hook
-  polyglot), which is not the same as running there. Treat both as unverified
-  until a matrix run exists.
+  is exercised by injection — path separators, `PATHEXT` resolution, the hook
+  polyglot — which is not the same as running there. Treat Windows as
+  unverified.
 
 ## Known limits
 
