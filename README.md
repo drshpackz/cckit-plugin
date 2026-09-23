@@ -103,11 +103,16 @@ typed while looking at theirs. Installing into a Django tree denies `app/`,
 
 ## What is proven, and what is only claimed
 
-- **Proven on macOS:** the probes against a live model, 190 unit tests, the
-  bench end to end on 36 paid runs.
-- **Claimed until CI is green:** Linux and Windows. The suite runs on a
-  three-platform matrix, and the honest state of that matrix is whatever the
-  badge says — not what this file says.
+- **Proven on macOS, twice:** the probes against a live model, 205 unit tests,
+  the bench end to end on 36 paid runs — and the whole suite again on a second
+  machine, from a fresh clone, with no checkout, no personal CLI and no
+  `claude` installed. That second run is what proves the published thing is
+  self-sufficient.
+- **Not proven:** Linux and Windows. A three-platform matrix is committed in
+  `.github/workflows/test.yml` and has never executed. Windows-specific logic
+  is exercised by injection (path separators, `PATHEXT` resolution, the hook
+  polyglot), which is not the same as running there. Treat both as unverified
+  until a matrix run exists.
 
 ## Known limits
 
