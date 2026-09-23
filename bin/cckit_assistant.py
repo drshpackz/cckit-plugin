@@ -122,7 +122,9 @@ def load_card(path):
     if not os.path.exists(path):
         die("нет карточки: " + path)
     out = {}
-    for line in open(path, encoding="utf-8"):
+    with open(path, encoding="utf-8") as _fh:
+        _lines = _fh.readlines()
+    for line in _lines:
         line = line.split("#", 1)[0].rstrip()
         if not line or ":" not in line:
             continue
@@ -509,6 +511,56 @@ def display_name(it):
     return os.path.basename(it.get("home", ""))
 
 
+def plugin_dir():
+    """Каталог самого плагина. CLAUDE_PLUGIN_ROOT ставит харнесс; вне его
+    считаем от этого файла — bin/ лежит в корне плагина."""
+    return os.environ.get("CLAUDE_PLUGIN_ROOT") or os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__)))
+
+
+def role_roots():
+    """Где искать роль, по порядку. Личная библиотека раньше поставляемой:
+    пользователь, положивший свою версию роли, имел это в виду."""
+    return [("ваша библиотека", library_dir()),
+            ("роли плагина", os.path.join(plugin_dir(), "assistants"))]
+
+
+def role_dir(role):
+    """Найти каталог роли или объяснить, где искали.
+
+    Раньше смотрели ровно в одно место — ~/.cckit/library. Плагин при этом
+    ВЕЗЁТ роли в assistants/, и у человека, поставившего его с GitHub,
+    установка падала «нет карточки»: продукт привозил роль, которую сам же не
+    мог поставить. Здесь работало только потому, что своя библиотека была
+    набита руками при разработке.
+    """
+    if os.sep in role or role.endswith(".yaml"):
+        cand = os.path.abspath(os.path.expanduser(role))
+        cand = os.path.dirname(cand) if cand.endswith(".yaml") else cand
+        if os.path.isfile(os.path.join(cand, "card.yaml")):
+            return cand
+        die("нет карточки по указанному пути: %s" % os.path.join(cand, "card.yaml"))
+    tried = []
+    for label, root in role_roots():
+        cand = os.path.join(root, role)
+        if os.path.isfile(os.path.join(cand, "card.yaml")):
+            return cand
+        tried.append("  %-18s %s" % (label + ":", cand))
+    die("роль «%s» не найдена. Искал:\n%s\n  что есть: %s"
+        % (role, "\n".join(tried), ", ".join(known_roles()) or "ничего"))
+
+
+def known_roles():
+    names = []
+    for _, root in role_roots():
+        if not os.path.isdir(root):
+            continue
+        for n in sorted(os.listdir(root)):
+            if os.path.isfile(os.path.join(root, n, "card.yaml")) and n not in names:
+                names.append(n)
+    return names
+
+
 def instance_home(role, project):
     """<role>@<folder name>, disambiguated only when it would collide.
 
@@ -573,7 +625,7 @@ def cmd_install(argv):
     if (project + "/").startswith(assistants_dir() + "/"):
         die("проект лежит внутри дома ассистента — так нельзя")
 
-    rdir = os.path.join(library_dir(), role)
+    rdir = role_dir(role)
     card = load_card(os.path.join(rdir, "card.yaml"))
     role_md = os.path.join(rdir, "ROLE.md")
     if not os.path.exists(role_md):
@@ -739,7 +791,7 @@ def cmd_grant(argv, revoking=False):
     granted = set(it.get("granted") or BASE_CAPS)
     granted = (granted - caps) if revoking else (granted | caps)
     granted = apply_owner_rules(it["home"], granted)
-    card = load_card(os.path.join(library_dir(), it["role"], "card.yaml"))
+    card = load_card(os.path.join(role_dir(it["role"]), "card.yaml"))
     apply_grants(it["home"], it["role"], it["project"], card, granted)
     it["granted"] = sorted(granted)
     save_instance(it)
@@ -768,7 +820,7 @@ def cmd_owner_rule(argv):
     with open(os.path.join(it["home"], "OWNER-RULES.json"), "w", encoding="utf-8") as fh:
         json.dump(rules, fh, indent=1, ensure_ascii=False)
     granted = apply_owner_rules(it["home"], set(it.get("granted") or BASE_CAPS))
-    card = load_card(os.path.join(library_dir(), it["role"], "card.yaml"))
+    card = load_card(os.path.join(role_dir(it["role"]), "card.yaml"))
     apply_grants(it["home"], it["role"], it["project"], card, granted)
     it["granted"] = sorted(granted)
     save_instance(it)
@@ -784,8 +836,8 @@ def cmd_reset(argv):
     it = find_instance(argv[0])
     hard = "--hard" in argv
     home, project, role = it["home"], it["project"], it["role"]
-    card = load_card(os.path.join(library_dir(), role, "card.yaml"))
-    body = render_role_body(os.path.join(library_dir(), role, "ROLE.md"), project, home)
+    card = load_card(os.path.join(role_dir(role), "card.yaml"))
+    body = render_role_body(os.path.join(role_dir(role), "ROLE.md"), project, home)
     write_card(home, role, card, body)
     granted = apply_owner_rules(home, set(it.get("granted") or BASE_CAPS))
     apply_grants(home, role, project, card, granted)
