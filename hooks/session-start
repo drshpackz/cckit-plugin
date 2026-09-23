@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# SessionStart: put the dispatcher skill in front of the agent, so it knows an
+# assistant is an option before it starts doing the work by hand.
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+content=$(cat "${PLUGIN_ROOT}/skills/using-assistants/SKILL.md" 2>/dev/null || exit 0)
+
+esc() {
+    local s="$1"
+    s="${s//\\/\\\\}"; s="${s//\"/\\\"}"
+    s="${s//$'\n'/\\n}"; s="${s//$'\r'/\\r}"; s="${s//$'\t'/\\t}"
+    printf '%s' "$s"
+}
+ctx="You have CCKit Assistants.\n\n$(esc "$content")"
+# Cursor expects additional_context; Claude Code reads hookSpecificOutput.
+printf '{"additional_context":"%s","hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"%s"}}\n' "$ctx" "$ctx"

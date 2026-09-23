@@ -1,0 +1,19 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "cckit-plugin",
+  "description": "CCKit Assistants: ready-made assistants installed into a project with one command",
+  "owner": {
+    "name": "drshpackz"
+  },
+  "plugins": [
+    {
+      "name": "cckit",
+      "description": "Ready-made research and build assistants you install into a project with one command — each with its own brain, its own memory, and a fence that is tested rather than promised",
+      "version": "0.2.0",
+      "source": "./",
+      "author": {
+        "name": "drshpackz"
+      }
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+name: design-scout
+summary: Кладёт дизайн на внутренности кодовой базы и пишет справку со ссылками file:line.
+access: write-scoped
+writes: ["docs/vscode-internals/**"]
+model: claude-opus-5
+effort: xhigh
+budget_usd: 3.00
+compact_at: 200000

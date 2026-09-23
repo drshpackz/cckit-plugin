@@ -1,0 +1,19 @@
+{
+  "name": "cckit",
+  "description": "Ready-made research and build assistants you install into a project with one command — each with its own brain, its own memory, and a fence that is tested rather than promised",
+  "version": "0.2.0",
+  "author": {
+    "name": "drshpackz"
+  },
+  "homepage": "https://github.com/drshpackz/cckit-plugin",
+  "repository": "https://github.com/drshpackz/cckit-plugin",
+  "license": "MIT",
+  "keywords": [
+    "agents",
+    "assistants",
+    "subagents",
+    "permissions",
+    "sandbox",
+    "skills"
+  ]
+}
