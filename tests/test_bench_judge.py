@@ -147,6 +147,23 @@ class TestNoise(unittest.TestCase):
         self.assertEqual(bench.verdict(wins=5, losses=1, ties=0, unusable=3),
                          "B лучше")
 
+    def test_a_comparison_that_never_happened_counts_against_the_bar(self):
+        # Уцелевшие 2:0 — чистый перевес, и по ним одним это «B лучше». Но
+        # десять сравнений просили и не провели: вариант не добежал. Плата за
+        # них внесена ровно так же, как за те, где промолчал судья.
+        self.assertEqual(bench.verdict(wins=2, losses=0, ties=0, missing=10),
+                         "прогон не добежал")
+
+    def test_a_failed_run_is_not_reported_as_a_failed_judge(self):
+        # Судья ответил на всё, что до него дошло. Назвать это «судья не
+        # справился» — соврать о причине в единственной строке, которую читают.
+        self.assertNotIn("судья", bench.verdict(0, 0, 0, unusable=0, missing=4))
+        self.assertIn("судья", bench.verdict(0, 0, 0, unusable=4, missing=0))
+
+    def test_both_kinds_of_dropout_are_named_separately(self):
+        self.assertEqual(bench.verdict(wins=1, losses=0, ties=0, unusable=2, missing=3),
+                         "вердикта нет: судья не ответил в 2 сравнениях, ещё 3 не состоялось")
+
     def test_dropouts_alone_are_not_nothing_to_compare(self):
         # «Нечего сравнивать» — это когда сравнений не просили. Когда их
         # просили и все потеряли, это провал судьи, и звать его надо так.
@@ -315,6 +332,42 @@ class TestJudging(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(sorted(v["case"] for v in self._verdicts()), ["c1", "c1"])
         self.assertIn("c2", out)
+
+    def test_the_report_counts_the_pairs_that_never_ran_in_the_denominator(self):
+        # Воспроизведение взломщика, в числах. Шесть случаев, у пяти добежал
+        # только `base`. Сравнений состоялось два, оплачено двенадцать.
+        #
+        # Утверждается ИМЕННО ЗНАМЕНАТЕЛЬ: прежний счёт печатал «2 из 2
+        # запрошенных», порог шума брал при двух (0.71), перевес 2:0 его
+        # перешагивал — и владелец читал «A лучше» там, где измерения не было.
+        # Тест, утверждающий только вердикт, здесь зелен и при знаменателе 2:
+        # хватит одного выпадения где угодно, чтобы ограда сработала по другой
+        # причине.
+        recs = [self._rec("base", "c1", "ХОРОШИЙ разбор"),
+                self._rec("pe", "c1", "догадка")]
+        for i in range(2, 7):
+            recs.append(self._rec("base", "c%d" % i, "ХОРОШИЙ разбор"))
+        self._results(recs)
+        self._only_on_path(FAKE_JUDGE)
+        rc, out = self._judge()
+        self.assertEqual(rc, 0)
+        self.assertIn("сравнений: 2 из 12 запрошенных", out)
+        self.assertIn("не состоялось 10 сравнений из 12", out)
+        self.assertIn("порог шума при 12 запрошенных", out)
+        self.assertIn("вердикт: прогон не добежал", out)
+
+    def test_a_case_where_both_sides_are_unscorable_still_counts_as_asked(self):
+        # Знаменатель нельзя считать по отобранным записям: случай, негодный с
+        # обеих сторон, не оставляет в них следа вовсе — и исчезает из счёта
+        # целиком, то есть дыра переезжает слоем ниже, а отчёт снова чист.
+        self._results([self._rec("base", "c1", "ХОРОШИЙ разбор"),
+                       self._rec("pe", "c1", "догадка"),
+                       self._rec("base", "c2", "", prompt_ok=False),
+                       self._rec("pe", "c2", "", prompt_ok=False)])
+        self._only_on_path(FAKE_JUDGE)
+        rc, out = self._judge()
+        self.assertEqual(rc, 0)
+        self.assertIn("сравнений: 2 из 4 запрошенных", out)
 
     def test_a_judge_that_reaches_for_tools_kills_the_verdict_not_just_the_pair(self):
         # Три случая, два длинных: судья тянется к инструментам ровно там, где

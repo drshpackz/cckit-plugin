@@ -509,9 +509,22 @@ def noise_floor(n):
 DROPOUT_LIMIT = 1.0 / 3.0
 
 
-def verdict(wins, losses, ties, unusable=0):
+# Каждая пара судится в обоих порядках: судья, предпочитающий прочитанное
+# первым, мерит позицию, а не качество. Константа одна, и цикл судейства ходит
+# ровно по ней — иначе число порядков в формуле знаменателя и число порядков в
+# цикле разъедутся, и знаменатель опять начнёт врать.
+ORDERS = (False, True)
+
+
+def verdict(wins, losses, ties, unusable=0, missing=0):
     """`wins` are B's. Ties count: they are comparisons that happened and they
     are evidence of sameness, so they make the margin harder to clear.
+
+    `unusable` — сравнение состоялось, судья не дал измерения. `missing` —
+    сравнения не было вовсе: один из вариантов не добежал, и судить оказалось
+    нечего. Для планки это одно и то же выпадение (за оба заплачено), а вот
+    называть их одним словом нельзя: «судья не справился» про несостоявшуюся
+    пару — ложь в отчёте.
 
     Everything is measured against the number of comparisons ASKED FOR, not the
     number that came back. A dropped comparison is not a comparison that did
@@ -526,11 +539,15 @@ def verdict(wins, losses, ties, unusable=0):
     `DROPOUT_LIMIT` there is no verdict at all, whatever the survivors say.
     """
     scored = wins + losses + ties
-    asked = scored + unusable
+    dropped = unusable + missing
+    asked = scored + dropped
     if asked == 0:
         return "нечего сравнивать"
-    if unusable > DROPOUT_LIMIT * asked:
-        return "судья не справился"
+    if dropped > DROPOUT_LIMIT * asked:
+        if unusable and missing:
+            return ("вердикта нет: судья не ответил в %d сравнениях, "
+                    "ещё %d не состоялось" % (unusable, missing))
+        return "прогон не добежал" if missing else "судья не справился"
     if scored == 0:
         return "нечего сравнивать"
     margin = abs(wins - losses) / float(asked)
@@ -629,6 +646,20 @@ def cmd_judge(argv):
                          % (", ".join(absent), ", ".join(present)))
         return 2
 
+    # Знаменатель — от ЗАПРОШЕННОГО, и считается ДО любой отбраковки.
+    # Раньше он собирался из дошедших пар: случай, где один вариант не добежал
+    # или добежал негодно, уходил в `uncompared` и исчезал вместе с числителем,
+    # `unusable` оставался нулём, ограда DROPOUT_LIMIT не срабатывала — и отчёт
+    # говорил «сравнений: 2 из 2 запрошенных», когда оплачено было двенадцать.
+    # Универсум берётся из СЫРЫХ записей, а не из `by`: `by` уже отфильтрован
+    # `scorable()`, и случай, где негодны обе стороны, не оставил бы в нём
+    # следа вовсе — та же дыра слоем ниже.
+    wanted = {}
+    for r in recs:
+        if r.get("variant") in (a.a, a.b):
+            wanted.setdefault(r.get("case"), set()).add(r.get("attempt", 1))
+    asked = len(ORDERS) * sum(len(v) for v in wanted.values())
+
     by, unscorable = {}, 0
     for r in recs:
         if not scorable(r):
@@ -657,7 +688,7 @@ def cmd_judge(argv):
                 task = ra.get("prompt") or rb.get("prompt") or case_id
                 # Both orders: a judge that prefers whatever it reads first is
                 # measuring position, not quality.
-                for swapped in (False, True):
+                for swapped in ORDERS:
                     first, second = (rb, ra) if swapped else (ra, rb)
                     la = blind_label(first["variant"], case_id, "A")
                     lb = blind_label(second["variant"], case_id, "B")
@@ -693,11 +724,17 @@ def cmd_judge(argv):
                     out.flush()     # судейство, умершее на пятом, хранит четыре
 
     n = wins + losses + ties
-    asked = n + unusable
+    # Всё, что просили и не сравнили: пары, до которых судья дошёл и ничего не
+    # сказал (`unusable`), и пары, которых не случилось вовсе (`missing`).
+    missing = max(0, asked - n - unusable)
     print("сравнений: %d из %d запрошенных (пропущено негодных прогонов: %d)"
           % (n, asked, unscorable))
     if uncompared:
         print("не с чем сравнивать, случаи пропущены: %s" % ", ".join(uncompared))
+    if missing:
+        print("не состоялось %d сравнений из %d (%.0f%%) — вариант не добежал, "
+              "и это выпадение, а не отсутствие вопроса"
+              % (missing, asked, 100.0 * missing / asked))
     if unusable:
         # Доля, а не число: планка и перевес считаются от запрошенных, и без
         # доли из отчёта не видно, почему шесть сравнений дали «не справился».
@@ -706,7 +743,7 @@ def cmd_judge(argv):
     print("%s выиграл %d, %s выиграл %d, ничьих %d" % (a.b, wins, a.a, losses, ties))
     print("порог шума при %d запрошенных сравнениях: %.2f"
           % (asked, noise_floor(asked)))
-    print("вердикт: " + verdict(wins, losses, ties, unusable))
+    print("вердикт: " + verdict(wins, losses, ties, unusable, missing))
     print("судейство стоило: $%.2f" % cost)
     return 0
 

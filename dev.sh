@@ -144,17 +144,30 @@ PY
     # соврать. Ищется ДОМ ТОГО, КТО СОБИРАЕТ ($HOME), а не любой путь вида
     # /Users/...: под второе попадает /Users/Shared/Adobe из комментария,
     # объясняющего ограду, и ворота начинают ругаться на документацию.
-    hardpaths() {
+    #
+    # Список файлов обязан быть НЕПУСТ, и это отдельная проверка, а не деталь.
+    # Раньше труба шла насквозь: git молчит (каталог не репозиторий, git сломан,
+    # фильтр съел всё) — xargs получает пусто, grep не находит ничего, ворота
+    # печатают «ok жёстких путей нет». Зелено оттого, что ничего не искали.
+    # Проверяется ПУСТОТА СПИСКА, а не её причина: причин много, следствие одно.
+    shipped() {
         git -C "$ROOT" ls-files -z 2>/dev/null \
-            | grep -zv '^docs/' | grep -zv '^dev\.sh$' \
-            | xargs -0 grep -lIF "$HOME/" 2>/dev/null
+            | grep -zv '^docs/' | grep -zv '^dev\.sh$'
     }
-    if hardpaths | head -3 | grep -q .; then
+    local list nfiles
+    list="$(mktemp)"
+    shipped > "$list"
+    nfiles="$(tr -dc '\0' < "$list" | wc -c | tr -d ' ')"
+    if [ ! -s "$list" ] || [ "${nfiles:-0}" -lt 1 ]; then
+        bad "список поставляемых файлов ПУСТ — git ничего не отдал;"
+        say "       проверки на домашние пути НЕ БЫЛО, и её зелёный цвет ничего не значит"
+    elif xargs -0 grep -lIF "$HOME/" < "$list" 2>/dev/null | head -3 | grep -q .; then
         bad "домашние пути в поставляемом — плагин непереносим:"
-        hardpaths | sed 's|.*|    &|'
+        xargs -0 grep -lIF "$HOME/" < "$list" 2>/dev/null | sed 's|.*|    &|'
     else
-        good "жёстких путей нет"
+        good "жёстких путей нет (проверено файлов: $nfiles)"
     fi
+    rm -f "$list"
 
     if claude plugin validate "$ROOT" 2>&1 | tail -3; then
         good "манифест валиден"
