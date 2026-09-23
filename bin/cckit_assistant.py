@@ -652,7 +652,7 @@ def cmd_install(argv):
             force = True; i += 1
         elif argv[i] == "--also-read" and i + 1 < len(argv):
             extra_read.append(os.path.abspath(os.path.expanduser(argv[i + 1])))
-            i += 1
+            i += 2
         elif argv[i] == "--grant":
             grant |= set(x.strip() for x in argv[i + 1].split(",") if x.strip()); i += 2
         elif argv[i] == "--revoke":
