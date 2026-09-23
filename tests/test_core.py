@@ -35,6 +35,12 @@ class TestInstallerWrapper(unittest.TestCase):
     def test_wrapper_argv_is_byte_for_byte_what_it_was(self):
         # Снимок снят с кода ДО выделения ядра: если обёртка съедет, съедет и
         # команда, под которой на самом деле работает установленный ассистент.
+        #
+        # Обновляется ТОЛЬКО осознанно, вместе с изменением CAPS, и в том же
+        # коммите. 2026-09-24: добавлен `Task` — второе имя инструмента спавна
+        # («the Agent or Task tool»); было названо одно, и второе не
+        # запрещалось ничем. Снимок потребовал решения, а не подстроился
+        # молча — ради этого он и стоит.
         self.assertEqual(
             cckit_assistant.launch_argv("/h", "/p", "q", {"read"}, "0.5"),
             ["claude", "-p", "q", "--add-dir", "/p", "--max-budget-usd", "0.5",
@@ -43,8 +49,8 @@ class TestInstallerWrapper(unittest.TestCase):
              "DesignSync", "Edit", "EnterWorktree", "ExitWorktree", "ListAgents",
              "Monitor", "NotebookEdit", "PushNotification", "RemoteTrigger",
              "ReportFindings", "ScheduleWakeup", "SendMessage", "Skill",
-             "TaskStop", "ToolSearch", "WebFetch", "WebSearch", "Workflow",
-             "Write", "--strict-mcp-config"])
+             "Task", "TaskStop", "ToolSearch", "WebFetch", "WebSearch",
+             "Workflow", "Write", "--strict-mcp-config"])
 
 
 class TestClaudeIsFound(unittest.TestCase):

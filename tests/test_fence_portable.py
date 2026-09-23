@@ -123,3 +123,27 @@ class TestExtraReadOnlyTrees(Layout):
                                      "writes": []}, a, "/home", "t")
         self.assertEqual(self.settings_with_extra(a, [])["permissions"],
                          plain["permissions"])
+
+
+class TestExtraTreesAreReachable(Layout):
+    """Правило Read мало: каталог вне проекта недостижим, пока не назван в
+    additionalDirectories.
+
+    Найдено ассистентом в работе: его settings.json содержал
+    Read(//дерево/**), а Glob отвечал «you haven't granted it yet». Правило
+    выглядело разрешением, которого нет, — зеркало той же беды, что запрет,
+    который ничего не запрещает.
+    """
+
+    def test_an_extra_tree_is_listed_as_reachable(self):
+        a, b = self.make(dirs=("x",)), self.make(dirs=("y",))
+        s = ck.compile_settings({"name": "t", "access": "read-only", "writes": []},
+                                a, "/home", "t", extra_read=[b])
+        self.assertIn(b, s["permissions"]["additionalDirectories"],
+                      "дерево разрешено правилом, но недостижимо")
+
+    def test_the_project_is_still_reachable(self):
+        a = self.make(dirs=("x",))
+        s = ck.compile_settings({"name": "t", "access": "read-only", "writes": []},
+                                a, "/home", "t", extra_read=[])
+        self.assertIn(a, s["permissions"]["additionalDirectories"])

@@ -69,7 +69,9 @@ CAPS = {
     # Leaving it out of this group left a shell open in an assistant documented
     # as having none — reproduced on a live instance, 2026-09-23.
     "shell":    ["Bash", "Monitor"],
-    "spawn":    ["Agent", "Workflow", "TaskStop"],
+    # У инструмента спавна в обороте ДВА имени: «the Agent or Task
+    # tool». Названо было одно, второе не запрещалось ничем.
+    "spawn":     ["Agent", "Task", "Workflow", "TaskStop"],
     "peers":    ["SendMessage", "ListAgents"],
     "publish":  ["Artifact", "ArtifactComments", "ArtifactData"],
     "web":      ["WebFetch", "WebSearch"],
@@ -251,7 +253,11 @@ def compile_settings(card, project, home, role, granted=None, extra_read=None):
         "permissions": {
             # NOT acceptEdits: that accepts silently whatever is not denied.
             "defaultMode": "default",
-            "additionalDirectories": [project],
+            # Правила Read мало: каталог вне проекта недостижим, пока он не
+            # назван здесь. Ассистент получал Read(//дерево/**) в allow и
+            # «you haven't granted it yet» от Glob — правило выглядело
+            # оградой наоборот: разрешением, которого нет.
+            "additionalDirectories": [project] + list(extra_read or []),
             "allow": allow,
             "deny": deny,
         },
