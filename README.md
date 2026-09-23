@@ -91,6 +91,19 @@ typed while looking at theirs. Installing into a Django tree denies `app/`,
   three-platform matrix, and the honest state of that matrix is whatever the
   badge says — not what this file says.
 
+## Known limits
+
+- **An assistant sees the skills that happen to be on your machine, not its
+  own.** `Skill` is granted to every assistant, nothing is installed into its
+  home, and `~/.claude/skills/` leaks in. A role therefore behaves differently
+  on different machines, and a bench number measured here will not reproduce on
+  yours. Fixed in 1.1.
+- The deny list is a snapshot taken at install. A top-level directory added to
+  the project afterwards is denied by nothing. Re-run `install --force` (it
+  does not touch memory).
+- The library holds one role. `find-agent` will honestly tell you there is
+  nothing to install.
+
 ## Without Python
 
 Every skill degrades to instructions. See `skills/create-agent/by-hand.md`.
