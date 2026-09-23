@@ -39,7 +39,7 @@ own.
 ## Giving it work
 
 ```
-cckit assistant install design-scout --project .
+cckit assistant install design-scout --project . --also-read ../other-tree
 cckit assistant run design-scout@myrepo "какой настройкой задаётся X, дай path:line"
 ```
 

@@ -211,7 +211,7 @@ def project_denies(project, writes):
     return out
 
 
-def compile_settings(card, project, home, role, granted=None):
+def compile_settings(card, project, home, role, granted=None, extra_read=None):
     access = card.get("access", "read-only")
     writes = card.get("writes", []) or []
     if access == "read-only" and writes:
@@ -220,11 +220,19 @@ def compile_settings(card, project, home, role, granted=None):
     # Never a bare tool name in `allow`: "Read" grants the whole filesystem.
     allow = [abs_rule("Read", project + "/**"), abs_rule("Read", home + "/**"),
              abs_rule("Edit", home + "/**")]
+    # Предмет изучения бывает шире одного дерева: семья инструментов живёт в
+    # нескольких каталогах. Читать — да, писать — нет, и запрет на запись
+    # явный: под bypassPermissions незапрещённое проходит молча.
+    extra_read = [os.path.abspath(os.path.expanduser(d)).rstrip("/")
+                  for d in (extra_read or [])]
+    for d in extra_read:
+        allow.append(abs_rule("Read", d + "/**"))
     for w in writes:
         allow.append(abs_rule("Edit", project.rstrip("/") + "/" + w.lstrip("/")))
 
     deny = [abs_rule("Edit", project.rstrip("/") + "/" + d)
             for d in project_denies(project, writes)]
+    deny += [abs_rule("Edit", d + "/**") for d in extra_read]
     # No shell unless it was granted: `rg --pre=CMD` and `git -c core.pager=CMD`
     # are arbitrary code execution around every path rule above. Granting it has
     # to reach this file too, or `--grant shell` reports a success that cannot
@@ -283,7 +291,8 @@ def write_card(home, role, card, body):
     return path
 
 
-def launch_argv(home, project, prompt, granted, budget, extra=None):
+def launch_argv(home, project, prompt, granted, budget, extra=None,
+                extra_read=None):
     """The exact command an instance runs under. Built here, in one place, so
     the probe exercises what the assistant really gets — on every platform.
 
@@ -294,13 +303,14 @@ def launch_argv(home, project, prompt, granted, budget, extra=None):
                             "mcp" not in granted, budget, extra=extra)
 
 
-def write_launch_json(home, role, project, granted, budget):
+def write_launch_json(home, role, project, granted, budget, extra_read=None):
     """The launch recipe as data, not as a shell script: a .sh cannot run on
     Windows, and this file is read by the CLI on every platform alike."""
     path = os.path.join(home, "launch.json")
     with open(path, "w", encoding="utf-8") as fh:
         json.dump({
             "role": role, "project": project, "home": home,
+            "extra_read": list(extra_read or []),
             "granted": sorted(granted), "budget_usd": budget,
             "strip_env": list(LINK_VARS),
             "set_env": {"CLAUDE_CODE_HARBOR_KITE": "0"},
@@ -311,7 +321,7 @@ def write_launch_json(home, role, project, granted, budget):
     return path
 
 
-def write_settings(home, role, project, card, granted):
+def write_settings(home, role, project, card, granted, extra_read=None):
     """Правила прав — производная от выданных групп, и переписываются вместе с
     ними.
 
@@ -325,20 +335,35 @@ def write_settings(home, role, project, card, granted):
     path = os.path.join(home, ".claude", "settings.json")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as fh:
-        json.dump(compile_settings(card, project, home, role, granted), fh,
+        json.dump(compile_settings(card, project, home, role, granted, extra_read=extra_read), fh,
                   indent="\t", ensure_ascii=False)
         fh.write("\n")
     return path
 
 
-def apply_grants(home, role, project, card, granted):
+def apply_grants(home, role, project, card, granted, extra_read=None):
     """Один вызов на обе производные записи: рецепт запуска и правила прав.
 
     Раздельные вызовы — это и есть та дыра: всякий, кто вспомнит один, забудет
     другой, и расхождение будет молчать до первого отказа.
+
+    `extra_read` при выдаче прав берётся из рецепта, а не теряется: иначе
+    ассистент, читавший два дерева, после первого же `grant` переставал видеть
+    второе — и молча.
     """
-    write_launch_json(home, role, project, granted, card.get("budget_usd"))
-    write_settings(home, role, project, card, granted)
+    if extra_read is None:
+        extra_read = read_recipe(home).get("extra_read") or []
+    write_launch_json(home, role, project, granted, card.get("budget_usd"),
+                      extra_read=extra_read)
+    write_settings(home, role, project, card, granted, extra_read=extra_read)
+
+
+def read_recipe(home):
+    try:
+        with open(os.path.join(home, "launch.json"), encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception:
+        return {}
 
 
 
@@ -404,7 +429,8 @@ def run_assistant(home, project, prompt, budget=None, timeout=600):
             sys.stderr.write("потолок поднят с %s до %s (рецепт экземпляра: %s)\n"
                              % (recipe, budget, recipe))
         argv = launch_argv(home, rec["project"], prompt, set(rec["granted"]),
-                           cap, extra=["--output-format", "json"])
+                           cap, extra=["--output-format", "json"],
+                           extra_read=rec.get("extra_read"))
     except Exception as e:
         return None, str(e)
     return run_claude(home, argv, timeout=timeout)
@@ -609,6 +635,7 @@ def instance_home(role, project):
 
 
 def cmd_install(argv):
+    extra_read = []
     if not argv:
         die("нужна роль: cckit assistant install <роль> --project DIR")
     role = argv[0]
@@ -623,6 +650,9 @@ def cmd_install(argv):
             project = argv[i + 1]; i += 2
         elif argv[i] == "--force":
             force = True; i += 1
+        elif argv[i] == "--also-read" and i + 1 < len(argv):
+            extra_read.append(os.path.abspath(os.path.expanduser(argv[i + 1])))
+            i += 1
         elif argv[i] == "--grant":
             grant |= set(x.strip() for x in argv[i + 1].split(",") if x.strip()); i += 2
         elif argv[i] == "--revoke":
@@ -998,7 +1028,7 @@ def main(argv=None):
         # Одна строка на глагол, полной формой. Раньше tree, show и where
         # прятались за интерпунктами внутри строки про list: команда, которую
         # не видно в справке, для человека не существует.
-        print("cckit assistant install <роль> --project DIR [--grant a,b] [--i-mean-it] [--force]\n"
+        print("cckit assistant install <роль> --project DIR [--also-read DIR] [--grant a,b] [--i-mean-it] [--force]\n"
               'cckit assistant run <экземпляр> "задание" [--budget N] [--timeout СЕК]\n'
               "cckit assistant list [--all] [--json]\n"
               "cckit assistant tree\n"

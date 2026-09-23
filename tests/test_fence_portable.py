@@ -83,3 +83,43 @@ class TestForeignLayouts(Layout):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestExtraReadOnlyTrees(Layout):
+    """Предмет изучения бывает шире одного дерева.
+
+    Ассистент, изучающий семью инструментов, должен читать несколько
+    каталогов — и НЕ получать при этом права писать в них.
+    """
+
+    def settings_with_extra(self, project, extra):
+        return ck.compile_settings(
+            {"name": "t", "access": "read-only", "writes": []},
+            project, "/home", "t", extra_read=extra)
+
+    def test_each_extra_tree_is_readable(self):
+        a, b = self.make(dirs=("x",)), self.make(dirs=("y",))
+        allow = self.settings_with_extra(a, [b])["permissions"]["allow"]
+        self.assertTrue(any(b.lstrip("/") in r and r.startswith("Read(")
+                            for r in allow), allow)
+
+    def test_an_extra_tree_grants_reading_and_not_writing(self):
+        a, b = self.make(dirs=("x",)), self.make(dirs=("y",))
+        s = self.settings_with_extra(a, [b])
+        self.assertFalse(any(r.startswith("Edit(") and b.lstrip("/") in r
+                             for r in s["permissions"]["allow"]),
+                         "лишнее дерево стало доступно на запись")
+
+    def test_an_extra_tree_is_denied_for_writing_outright(self):
+        a, b = self.make(dirs=("x",)), self.make(dirs=("y",))
+        s = self.settings_with_extra(a, [b])
+        self.assertTrue(any(r.startswith("Edit(") and b.lstrip("/") in r
+                            for r in s["permissions"]["deny"]),
+                        "под bypass незапрещённая запись проходит молча")
+
+    def test_no_extra_trees_changes_nothing(self):
+        a = self.make(dirs=("x",))
+        plain = ck.compile_settings({"name": "t", "access": "read-only",
+                                     "writes": []}, a, "/home", "t")
+        self.assertEqual(self.settings_with_extra(a, [])["permissions"],
+                         plain["permissions"])
