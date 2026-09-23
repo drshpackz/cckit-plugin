@@ -110,13 +110,20 @@ class TestPathRules(unittest.TestCase):
     def test_no_bare_tool_name_in_allow(self):
         # Голый "Read" в allow даёт всю файловую систему — доказано чтением
         # /etc/hosts из ассистента, которому полагался один проект.
-        rules = settings(granted=ck.BASE_CAPS, writes=["docs/**"])["permissions"]["allow"]
+        with Sandbox() as sb:
+            os.makedirs(os.path.join(sb.project, "docs"))
+            rules = settings(granted=ck.BASE_CAPS, project=sb.project,
+                             home=sb.home, writes=["docs/**"])["permissions"]["allow"]
         self.assertTrue(rules)
         for rule in rules:
             self.assertIn("(", rule, "правило «%s» без пути даёт всю файловую систему" % rule)
 
     def test_absolute_path_rules_use_the_doubled_slash_form(self):
-        s = settings(granted=ck.BASE_CAPS, home="/h", project="/p", writes=["docs/**"])
+        with Sandbox() as sb:
+            os.makedirs(os.path.join(sb.project, "docs"))
+            os.makedirs(os.path.join(sb.project, "src"))
+            s = settings(granted=ck.BASE_CAPS, home=sb.home, project=sb.project,
+                         writes=["docs/**"])
         checked = 0
         for rule in s["permissions"]["allow"] + s["permissions"]["deny"]:
             if "(" not in rule:
@@ -133,8 +140,22 @@ class TestPathRules(unittest.TestCase):
     def test_a_declared_write_target_is_not_also_denied(self):
         # Разрешение и запрет на один путь — это запрет, и `--grant write`
         # молча не работает.
-        s = settings(granted=set(ck.BASE_CAPS) | {"write"}, writes=["src/**"])
-        self.assertNotIn(ck.abs_rule("Edit", "/p/src/**"), s["permissions"]["deny"])
+        #
+        # Проект НАСТОЯЩИЙ, потому что запреты теперь считаются обходом дерева.
+        # На выдуманном `/p` обход не находит ничего, запретов нет вовсе, и
+        # «выданное не запрещено» оказывается правдой ни о чём.
+        with Sandbox() as sb:
+            os.makedirs(os.path.join(sb.project, "docs", "api"))
+            os.makedirs(os.path.join(sb.project, "src"))
+            s = settings(granted=set(ck.BASE_CAPS) | {"write"},
+                         project=sb.project, home=sb.home, writes=["docs/api/**"])
+            mine = ck.abs_rule("Edit", sb.project + "/docs/api/**")
+            self.assertEqual(
+                (mine in s["permissions"]["allow"],
+                 mine in s["permissions"]["deny"],
+                 # обход правда что-то запретил — иначе проверка выше пуста
+                 ck.abs_rule("Edit", sb.project + "/src/**") in s["permissions"]["deny"]),
+                (True, False, True))
 
 
 class TestGrant(unittest.TestCase):
