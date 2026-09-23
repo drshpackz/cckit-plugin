@@ -1,0 +1,18 @@
+schema_version: "1.0"
+name: ru-list
+description: Вопрос «кто уже стоит» — по-русски.
+tags: [ru, positive]
+execution:
+  prompt: |
+    Какие ассистенты у меня уже стоят в этом проекте и что им вообще
+    разрешено делать?
+  max_turns: 3
+  timeout_seconds: 180
+  allowed_tools: [Read, Glob, Grep, Skill]
+runs: 2
+graders:
+  - type: tool_used
+    name: list-agents-fired
+    tool: Skill
+    input_match: "cckit:list-agents"
+    min: 1

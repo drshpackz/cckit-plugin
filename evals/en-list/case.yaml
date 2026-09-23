@@ -1,0 +1,18 @@
+schema_version: "1.0"
+name: en-list
+description: Asking who is already installed — in English.
+tags: [en, positive]
+execution:
+  prompt: |
+    Which assistants are already installed for this project, where do they
+    live, and what are they allowed to do?
+  max_turns: 3
+  timeout_seconds: 180
+  allowed_tools: [Read, Glob, Grep, Skill]
+runs: 2
+graders:
+  - type: tool_used
+    name: list-agents-fired
+    tool: Skill
+    input_match: "cckit:list-agents"
+    min: 1

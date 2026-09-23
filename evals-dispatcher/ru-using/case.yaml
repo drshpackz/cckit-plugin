@@ -1,0 +1,31 @@
+schema_version: "1.0"
+name: ru-using
+description: >
+  Работа, переживающая разговор, без слова «ассистент» — по-русски.
+  Диспетчер using-assistants приходит к агенту хуком SessionStart, а не
+  вызовом Skill: его текст уже в контексте, и звать его нечем — пять прогонов
+  дали один вызов Skill из пяти. Поэтому здесь судится не вызов инструмента,
+  а то, за что диспетчер отвечает: ответ сводится к постоянному помощнику
+  проекта, а не к общему совету. В плече «без плагина» этот грейдер обязан
+  падать — это и есть доказательство, что сработал плагин.
+tags: [ru, positive]
+execution:
+  prompt: |
+    Я третий раз вручную перечитываю этот репозиторий и на следующей неделе
+    буду читать его снова. Что с этим делать?
+  max_turns: 3
+  timeout_seconds: 180
+  allowed_tools: [Read, Glob, Grep, Skill]
+runs: 2
+graders:
+  - type: llm
+    name: answer-offers-standing-assistant
+    focus: last_message
+    criteria: |
+      The answer must propose, as the thing to do, setting up a PERSISTENT
+      assistant bound to this project: a separate long-lived helper that keeps
+      working and keeps its own memory between sessions. Naming the CCKit
+      command or skill for it also passes.
+      It FAILS if the answer only offers one-shot measures — take notes, write
+      a README or CLAUDE.md, use a subagent for this conversation, index the
+      code, read faster — with no standing assistant proposed.

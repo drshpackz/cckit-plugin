@@ -1,0 +1,25 @@
+schema_version: "1.0"
+name: en-offtopic
+description: An off-topic question. No skill should fire.
+tags: [en, negative]
+execution:
+  prompt: |
+    In two paragraphs, explain the difference between TCP and UDP.
+  max_turns: 3
+  timeout_seconds: 180
+  allowed_tools: [Read, Glob, Grep, Skill]
+runs: 2
+graders:
+  - type: tool_used
+    name: no-cckit-skill
+    tool: Skill
+    input_match: "cckit:"
+    min: 0
+    max: 0
+  # See en-code: a negative case must also prove the run happened at all.
+  - type: regex
+    name: answer-does-the-work
+    target: last_message
+    pattern: "udp"
+    flags: "i"
+    match: contains

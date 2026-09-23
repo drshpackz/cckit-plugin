@@ -1,0 +1,32 @@
+schema_version: "1.0"
+name: ru-code
+description: Обычная просьба про код. Не должен сработать ни один скилл.
+tags: [ru, negative]
+execution:
+  prompt: |
+    Перепиши, чтобы читало JSON вместо CSV:
+
+        import csv
+        with open("data.csv") as f:
+            rows = list(csv.DictReader(f))
+        print(len(rows))
+  max_turns: 3
+  timeout_seconds: 180
+  allowed_tools: [Read, Glob, Grep, Skill]
+runs: 2
+graders:
+  - type: tool_used
+    name: no-cckit-skill
+    tool: Skill
+    input_match: "cckit:"
+    min: 0
+    max: 0
+  # Иначе «ни один скилл не сработал» проходит и на прогоне, который вообще
+  # ничего не сделал: упал на первом ходу, кончился по времени, ответил пусто.
+  # Этот грейдер требует, чтобы работа была сделана.
+  - type: regex
+    name: answer-does-the-work
+    target: last_message
+    pattern: "json"
+    flags: "i"
+    match: contains

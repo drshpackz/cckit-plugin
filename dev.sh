@@ -16,8 +16,64 @@ say()  { printf '%s\n' "$*"; }
 good() { printf '  ok   %s\n' "$*"; }
 bad()  { printf '  БЕДА %s\n' "$*"; ok=1; }
 
+# Набор — самостоятельные ворота, а не хвост `check`: его гоняют по двадцать
+# раз в час. В `check` он идёт ПЕРВЫМ: на красном наборе всё, что ниже, —
+# шум, и читать его незачем.
+cmd_test() {
+    say "== набор =="
+    local out n
+    if out="$(cd "$ROOT" && python3 -m unittest discover -s tests 2>&1)"; then
+        # «Ran 0 tests ... OK» — тоже успех для unittest: так выглядит набор,
+        # который не нашёлся (переехал каталог, сломался импорт на уровне
+        # модуля). Зелёные ворота на нуле тестов — ровно то, от чего ворота
+        # заводили, поэтому число обязано быть названо и быть больше нуля.
+        n="$(printf '%s\n' "$out" | sed -n 's/^Ran \([0-9][0-9]*\) test.*/\1/p' | tail -1)"
+        if [ "${n:-0}" -gt 0 ] 2>/dev/null; then
+            good "тесты — Ran $n tests"
+            return 0
+        fi
+        bad "тесты — не нашлось ни одного теста: зелёное ничто"
+        printf '%s\n' "$out" | tail -5 | sed 's|.*|    &|'
+        return 1
+    fi
+    bad "тесты — набор красный:"
+    # Хвост вывода — это стдаут соседних тестов, а не поломка: в прошлый раз
+    # двадцать последних строк не содержали ни одного имени упавшего теста.
+    # Показываем строки, которые называют упавшее; хвост — только если их нет.
+    printf '%s\n' "$out" | grep -E '^(FAIL|ERROR):|^FAILED|^Ran ' | tail -20 | sed 's|.*|    &|' \
+        || printf '%s\n' "$out" | tail -20 | sed 's|.*|    &|'
+    return 1
+}
+
+# Срабатывание скиллов — единственное, чего юнит-тест не докажет: скилл,
+# который не срабатывает, неотличим от несуществующего. Отдельной командой, а
+# не внутри `check`, потому что стоит денег и ходит в сеть.
+cmd_eval() {
+    say "== срабатывание скиллов =="
+    # Незапущенные ворота зелены. Без `claude` на PATH это молчаливый ноль,
+    # поэтому проверка до запуска, а не после.
+    if ! command -v claude >/dev/null 2>&1; then
+        bad "claude не на PATH — случаи не запускались"
+        return 1
+    fi
+    # Случаи — в evals/, по каталогу на случай. Флаги идут насквозь:
+    # --case '<имя>', --runs N, --eval-dir evals-dispatcher (измерение
+    # диспетчера, оно в ворота не входит — см. evals-dispatcher/README.md).
+    # Первый прогон в непомеченном доверием каталоге спрашивает подтверждение:
+    # отвечать человеку, --trust-plugin — для CI.
+    ( cd "$ROOT" && claude plugin eval . --no-publish "$@" )
+    local rc=$?
+    if [ $rc -eq 0 ]; then
+        good "скиллы срабатывают"
+    else
+        bad "скиллы — случаи красные (код $rc)"
+    fi
+    return $rc
+}
+
 cmd_check() {
     say "== проверка =="
+    cmd_test
     for f in .claude-plugin/plugin.json .claude-plugin/marketplace.json hooks/hooks.json; do
         python3 -c "import json;json.load(open('$ROOT/$f'))" 2>/dev/null \
             && good "$f" || bad "$f — не разбирается как JSON"
@@ -89,16 +145,6 @@ PY
         good "жёстких путей нет"
     fi
 
-    # The suite itself is part of the gate. Without this `check` passed on a
-    # red suite, which is the same as having no suite at all.
-    local out
-    if out="$(cd "$ROOT" && python3 -m unittest discover -s tests 2>&1)"; then
-        good "тесты — $(printf '%s' "$out" | grep -o 'Ran [0-9]* test[s]*')"
-    else
-        bad "тесты — набор красный:"
-        printf '%s\n' "$out" | tail -20 | sed 's|.*|    &|'
-    fi
-
     claude plugin validate "$ROOT" 2>&1 | tail -3
     return $ok
 }
@@ -126,10 +172,24 @@ cmd_reinstall() {
     claude plugin list 2>&1 | grep -i cckit || say "  в списке нет — смотри вывод выше"
 }
 
+# `all` без eval: он тратит деньги и ходит в сеть, а `all` гоняют по десять раз
+# на дню. CCKIT_LIVE=1 — та же ручка, которой в наборе включаются живые прогоны.
+cmd_all() {
+    cmd_check || return 1
+    if [ "${CCKIT_LIVE:-0}" = "1" ]; then
+        cmd_eval || return 1
+    else
+        say "== срабатывание скиллов ==  пропущено (CCKIT_LIVE=1 — прогнать; это деньги и сеть)"
+    fi
+    cmd_publish "${1:-cckit: правки}" && cmd_reinstall
+}
+
 case "${1:-all}" in
     check)     cmd_check ;;
+    test)      cmd_test ;;
+    eval)      shift; cmd_eval ${1:+"$@"} ;;
     publish)   cmd_publish "${2:-}" ;;
     reinstall) cmd_reinstall "${2:-}" ;;
-    all)       cmd_check && cmd_publish "${2:-cckit: правки}" && cmd_reinstall ;;
-    *) say "dev.sh check | publish [сообщение] | reinstall [источник] | all [сообщение]" ;;
+    all)       cmd_all "${2:-cckit: правки}" ;;
+    *) say "dev.sh check | test | eval [флаги] | publish [сообщение] | reinstall [источник] | all [сообщение]" ;;
 esac

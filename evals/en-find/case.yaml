@@ -1,0 +1,18 @@
+schema_version: "1.0"
+name: en-find
+description: Asking whether a published role already exists — in English.
+tags: [en, positive]
+execution:
+  prompt: |
+    Before I write one myself: is there an existing published assistant role
+    for code review that I could just install?
+  max_turns: 3
+  timeout_seconds: 180
+  allowed_tools: [Read, Glob, Grep, Skill]
+runs: 2
+graders:
+  - type: tool_used
+    name: find-agent-fired
+    tool: Skill
+    input_match: "cckit:find-agent"
+    min: 1

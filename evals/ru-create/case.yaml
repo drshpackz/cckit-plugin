@@ -1,0 +1,19 @@
+schema_version: "1.0"
+name: ru-create
+description: Просьба завести постоянного помощника — по-русски.
+tags: [ru, positive]
+execution:
+  prompt: |
+    Мне нужен постоянный помощник, который собирает сведения о кодовой базе,
+    пока я работаю, и помнит их на следующей неделе. Заведи такого для этого
+    проекта.
+  max_turns: 3
+  timeout_seconds: 180
+  allowed_tools: [Read, Glob, Grep, Skill]
+runs: 2
+graders:
+  - type: tool_used
+    name: create-agent-fired
+    tool: Skill
+    input_match: "cckit:create-agent"
+    min: 1

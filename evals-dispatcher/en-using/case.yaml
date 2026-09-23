@@ -1,0 +1,32 @@
+schema_version: "1.0"
+name: en-using
+description: >
+  Work that outlives the conversation, with no mention of assistants — in
+  English. The using-assistants dispatcher reaches the agent through the
+  SessionStart hook, not through a Skill call: its text is already in context,
+  so there is nothing to invoke, and five runs produced one Skill call. What is
+  judged here is therefore not a tool call but what the dispatcher is for — the
+  answer lands on a standing assistant for this project rather than on generic
+  advice. The no-plugin arm must fail this grader; that is the proof it was the
+  plugin that fired.
+tags: [en, positive]
+execution:
+  prompt: |
+    This is the third time I am reading this whole codebase by hand, and I
+    will need it again next week. What should I be doing instead?
+  max_turns: 3
+  timeout_seconds: 180
+  allowed_tools: [Read, Glob, Grep, Skill]
+runs: 2
+graders:
+  - type: llm
+    name: answer-offers-standing-assistant
+    focus: last_message
+    criteria: |
+      The answer must propose, as the thing to do, setting up a PERSISTENT
+      assistant bound to this project: a separate long-lived helper that keeps
+      working and keeps its own memory between sessions. Naming the CCKit
+      command or skill for it also passes.
+      It FAILS if the answer only offers one-shot measures — take notes, write
+      a README or CLAUDE.md, use a subagent for this conversation, index the
+      code, read faster — with no standing assistant proposed.

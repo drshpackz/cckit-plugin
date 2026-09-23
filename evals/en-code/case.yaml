@@ -1,0 +1,32 @@
+schema_version: "1.0"
+name: en-code
+description: An ordinary coding request. No skill should fire.
+tags: [en, negative]
+execution:
+  prompt: |
+    Rewrite this so it reads JSON instead of CSV:
+
+        import csv
+        with open("data.csv") as f:
+            rows = list(csv.DictReader(f))
+        print(len(rows))
+  max_turns: 3
+  timeout_seconds: 180
+  allowed_tools: [Read, Glob, Grep, Skill]
+runs: 2
+graders:
+  - type: tool_used
+    name: no-cckit-skill
+    tool: Skill
+    input_match: "cckit:"
+    min: 0
+    max: 0
+  # Without this, "no skill fired" also passes a run that did nothing at all —
+  # died on the first turn, timed out, answered with an empty string. This
+  # grader demands that the work was actually done.
+  - type: regex
+    name: answer-does-the-work
+    target: last_message
+    pattern: "json"
+    flags: "i"
+    match: contains
