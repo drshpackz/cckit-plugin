@@ -242,6 +242,34 @@ def write_launch_json(home, role, project, granted, budget):
     return path
 
 
+def write_settings(home, role, project, card, granted):
+    """Правила прав — производная от выданных групп, и переписываются вместе с
+    ними.
+
+    Их писали только `install` и `reset`. `grant`, `revoke` и `owner-rule`
+    правили лишь launch.json, то есть флаги запуска, — и расходились с
+    правилами на диске: `--grant shell` снимал Bash с `--disallowedTools`,
+    а `deny: ["Bash"]` оставался, и слой прав продолжал отказывать. Выдача
+    рапортовала успех, которого не доставляла; обратно, `owner-rule deny`
+    оставлял в правилах разрешение, которое владелец только что закрыл.
+    """
+    path = os.path.join(home, ".claude", "settings.json")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(compile_settings(card, project, home, role, granted), fh,
+                  indent="\t", ensure_ascii=False)
+        fh.write("\n")
+    return path
+
+
+def apply_grants(home, role, project, card, granted):
+    """Один вызов на обе производные записи: рецепт запуска и правила прав.
+
+    Раздельные вызовы — это и есть та дыра: всякий, кто вспомнит один, забудет
+    другой, и расхождение будет молчать до первого отказа.
+    """
+    write_launch_json(home, role, project, granted, card.get("budget_usd"))
+    write_settings(home, role, project, card, granted)
 
 
 
@@ -508,12 +536,7 @@ def cmd_install(argv):
     granted = apply_owner_rules(home, granted)
     if "spawn" in granted and not card.get("budget_usd"):
         die("«spawn» без budget_usd в карточке не выдаётся: право звать других без потолка денег")
-    write_launch_json(home, role, project, granted, card.get("budget_usd"))
-
-    settings = compile_settings(card, project, home, role, granted)
-    with open(os.path.join(home, ".claude", "settings.json"), "w", encoding="utf-8") as fh:
-        json.dump(settings, fh, indent="\t", ensure_ascii=False)
-        fh.write("\n")
+    apply_grants(home, role, project, card, granted)
 
     writes = card.get("writes", []) or ["— только чтение"]
     with open(os.path.join(home, "CLAUDE.md"), "w", encoding="utf-8") as fh:
@@ -653,7 +676,7 @@ def cmd_grant(argv, revoking=False):
     granted = (granted - caps) if revoking else (granted | caps)
     granted = apply_owner_rules(it["home"], granted)
     card = load_card(os.path.join(library_dir(), it["role"], "card.yaml"))
-    write_launch_json(it["home"], it["role"], it["project"], granted, card.get("budget_usd"))
+    apply_grants(it["home"], it["role"], it["project"], card, granted)
     it["granted"] = sorted(granted)
     save_instance(it)
     print("теперь выдано: " + ", ".join(it["granted"]))
@@ -682,7 +705,7 @@ def cmd_owner_rule(argv):
         json.dump(rules, fh, indent=1, ensure_ascii=False)
     granted = apply_owner_rules(it["home"], set(it.get("granted") or BASE_CAPS))
     card = load_card(os.path.join(library_dir(), it["role"], "card.yaml"))
-    write_launch_json(it["home"], it["role"], it["project"], granted, card.get("budget_usd"))
+    apply_grants(it["home"], it["role"], it["project"], card, granted)
     it["granted"] = sorted(granted)
     save_instance(it)
     print("записано правило владельца: «%s» закрыт. Выдано теперь: %s"
@@ -701,10 +724,7 @@ def cmd_reset(argv):
     body = render_role_body(os.path.join(library_dir(), role, "ROLE.md"), project, home)
     write_card(home, role, card, body)
     granted = apply_owner_rules(home, set(it.get("granted") or BASE_CAPS))
-    write_launch_json(home, role, project, granted, card.get("budget_usd"))
-    with open(os.path.join(home, ".claude", "settings.json"), "w", encoding="utf-8") as fh:
-        json.dump(compile_settings(card, project, home, role, granted), fh, indent="\t", ensure_ascii=False)
-        fh.write("\n")
+    apply_grants(home, role, project, card, granted)
     writes = card.get("writes") or ["— только чтение"]
     with open(os.path.join(home, "CLAUDE.md"), "w", encoding="utf-8") as fh:
         fh.write(CLAUDE_MD.format(role=role, project=project, home=home,
