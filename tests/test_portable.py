@@ -151,14 +151,12 @@ class TestPermissionRulesArePosix(unittest.TestCase):
         self.assertTrue(any("Users" in r for r in rules),
                         "путь вообще не доехал до правил: %r" % rules)
 
-    @unittest.expectedFailure
     def test_no_backslash_survives_into_a_permission_rule(self):
-        # ИЗВЕСТНАЯ ДЫРА, не мой файл: bin/cckit_assistant.abs_rule клеит
+        # ПОЧИНЕНО 2026-09-24. Было: bin/cckit_assistant.abs_rule клеил
         # "//" + path и не трогает разделители, так что на windows выходит
         # Read(//C:\Users\x\p/**) — такое правило не совпадает ни с чем, и
         # ограда молча ничего не огораживает.
-        # Декоратор снимается ТЕМ ЖЕ коммитом, что чинит abs_rule: после
-        # починки unittest объявит unexpected success и набор станет красным.
+        # Декоратор снят тем же коммитом, что починил abs_rule.
         for rule in self.windows_rules():
             if "(" not in rule:
                 continue

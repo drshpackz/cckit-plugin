@@ -138,9 +138,22 @@ def load_card(path):
 
 
 def abs_rule(tool, path):
-    """An absolute path in a permission rule needs a DOUBLED leading slash.
-    With one slash the rule matches nothing — silently."""
-    return "%s(//%s)" % (tool, path.lstrip("/"))
+    """Правило прав из абсолютного пути.
+
+    Два условия, и промах по каждому не виден:
+
+    1. Абсолютный путь требует УДВОЕННОГО ведущего слэша. С одинарным правило
+       не совпадает ни с чем — молча.
+    2. Пути сопоставляются в posix-форме на ВСЕХ платформах. На windows
+       os.path.join даёт `C:\\Users\\x`, и правило с обратными косыми не
+       совпадает тоже ни с чем: ограда пишется в settings.json, выглядит
+       оградой и не огораживает ничего. Буква диска остаётся как есть —
+       `//C:/Users/x/**` совпадает, а срезать её значило бы приравнять диски.
+    """
+    p = path.replace("\\", "/")
+    while "//" in p.lstrip("/"):
+        p = p.lstrip("/").replace("//", "/")
+    return "%s(//%s)" % (tool, p.lstrip("/"))
 
 
 # Запрещается и то, чего в проекте нет: имена встречаются почти везде, а
