@@ -1,0 +1,8 @@
+name: under-the-hood
+summary: Строит в коде то, что решено на холсте: темы, вклады, контрибуции — со ссылками path:line.
+access: write-scoped
+writes: ["extensions/theme-boomzi/**", "docs/vscode-internals/**"]
+model: claude-opus-5
+effort: xhigh
+budget_usd: 4.00
+compact_at: 200000
