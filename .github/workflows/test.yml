@@ -1,0 +1,50 @@
+name: tests
+on: [push, pull_request]
+
+jobs:
+  suite:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+      - name: The floor is really 3.9
+        shell: bash
+        run: python -c "import sys;print(sys.version);sys.exit(0 if sys.version_info[:2]==(3,9) else 1)"
+      - name: Run the suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest discover -s tests -v 2>&1 | tee out.txt
+          # A run where nothing ran reports success: an import error inside a
+          # discovered package, a wrong -s, a suite that collected zero cases.
+          # "Ran 0 tests" is that failure wearing a green hat.
+          grep -Eq 'Ran [1-9][0-9]* tests?' out.txt
+      - name: No live runs in CI
+        shell: bash
+        # Live probes call the real CLI and bill the account on every push.
+        run: test -z "${CCKIT_LIVE:-}"
+
+  required:
+    needs: suite
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: The matrix must have succeeded
+        shell: bash
+        # `needs.<job>.result` is success | failure | cancelled | skipped.
+        # Anything but success means a platform went unproven, and an unproven
+        # platform reported green is exactly the lie this job exists to stop.
+        run: |
+          set -eu
+          result='${{ needs.suite.result }}'
+          echo "suite: $result"
+          if [ "$result" != "success" ]; then
+            echo "матрица не прошла: $result" >&2
+            exit 1
+          fi
