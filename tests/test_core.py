@@ -112,3 +112,42 @@ class TestTranscript(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDiagnosticReproducesNothing(unittest.TestCase):
+    """Диагностика расхождения промптов не имеет права воспроизводить промпт.
+
+    Прежняя версия печатала первые 70 знаков доставленного. Если роль не
+    дошла, это чужой системный промпт — и он уезжал в results.jsonl и на
+    терминал.
+    """
+
+    NEEDLE = "СЕКРЕТНАЯ-СТРОКА-КОТОРОЙ-НЕ-ДОЛЖНО-БЫТЬ-В-ОТЧЁТЕ"
+
+    def test_the_needle_is_not_echoed_into_the_note(self):
+        delivered = "Начало. " + self.NEEDLE + " Конец."
+        note = core.describe_mismatch(delivered, "совсем другое тело роли")
+        self.assertNotIn(self.NEEDLE, note)
+        for n in (12, 16, 24):
+            self.assertNotIn(self.NEEDLE[:n], note,
+                             "в отчёт утекли первые %d знаков промпта" % n)
+
+    def test_the_note_still_answers_what_the_echo_answered(self):
+        # Латиница нарочно: общий префикс здесь пересчитывается глазами и не
+        # зависит от того, как считать кириллицу.
+        delivered, expected = "abcdefGHI", "abcdefXYZ"
+        note = core.describe_mismatch(delivered, expected)
+        self.assertIn("доставлено 9 знаков", note)
+        self.assertIn("ожидалось 9", note)
+        self.assertIn(core.fingerprint(delivered), note)
+        self.assertIn("совпадает первых 6", note)
+
+    def test_the_fingerprint_separates_and_does_not_restore(self):
+        a, b = core.fingerprint("роль А"), core.fingerprint("роль Б")
+        self.assertNotEqual(a, b)
+        self.assertEqual(a, core.fingerprint("роль А"))
+        self.assertEqual(len(a), 12)
+
+    def test_an_empty_delivered_prompt_is_described_not_crashed(self):
+        self.assertIn("доставлено 0 знаков", core.describe_mismatch("", "тело"))
+        self.assertIn("доставлено 0 знаков", core.describe_mismatch(None, "тело"))

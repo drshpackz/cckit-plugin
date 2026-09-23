@@ -13,12 +13,13 @@ import json
 import math
 import os
 import re
+import shutil
 import sys
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cckit_core as core  # noqa: E402
-from cckit_assistant import BASE_CAPS, caps_to_disallowed  # noqa: E402
+from cckit_assistant import BASE_CAPS, LEARNED_MD, caps_to_disallowed  # noqa: E402
 
 
 def runs_dir():
@@ -55,9 +56,18 @@ def load_cases(path):
 
 
 def scorable(rec):
-    """A record worth comparing: it ran, and the prompt under test reached the
-    model. Anything else is excluded and reported, never averaged in."""
-    return bool(rec.get("ok")) and bool(rec.get("prompt_ok"))
+    """A record worth comparing: it ran, and everything under test reached the
+    model — the role body (`prompt_ok`) and, for an arm that was given one, the
+    learned layer (`memory_ok`). Anything else is excluded and reported, never
+    averaged in.
+
+    `memory_ok` defaults to True because most records have no learned layer to
+    deliver; a record that asked for one and did not get it is the same failure
+    as an undelivered role, and it looks exactly like "the learned layer adds
+    nothing".
+    """
+    return (bool(rec.get("ok")) and bool(rec.get("prompt_ok"))
+            and bool(rec.get("memory_ok", True)))
 
 
 def outcome(res, err):
@@ -124,14 +134,15 @@ def prompt_delivered(session_id, body):
     first = parts[0] if isinstance(parts[0], str) else ""
     first, want = first.strip(), body.strip()
     if not first.startswith(want):
-        return False, "промпт начинается не телом роли (частей %d): «%s…»" % (
-            len(parts), first[:70].replace("\n", " "))
+        return False, "промпт начинается не телом роли (частей %d): %s" % (
+            len(parts), core.describe_mismatch(first, want))
     # With `memory: project` the CLI appends its own Persistent Agent Memory
     # block to the same part. Anything else after the body means something
     # unexpected was injected between the role and the model.
     rest = first[len(want):].strip()
     if rest and not rest.startswith(core.MEMORY_BLOCK):
-        return False, "после тела роли идёт не блок памяти: «%s…»" % rest[:60].replace("\n", " ")
+        return False, "после тела роли идёт не блок памяти: %d знаков [%s]" % (
+            len(rest), core.fingerprint(rest))
     return True, "частей: %d, %s" % (len(parts), "с блоком памяти" if rest else "без добавок")
 
 

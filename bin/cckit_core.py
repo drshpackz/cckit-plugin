@@ -6,6 +6,7 @@ separate copies of the same logic, and a fix to one left the other — and the
 published plugin — with an ungated shell.
 """
 
+import hashlib
 import json
 import os
 import shutil
@@ -88,6 +89,35 @@ def projects_dir():
     base = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(home(), ".claude")
     return os.path.join(base, "projects")
 
+
+
+def fingerprint(text, n=12):
+    """Короткая устойчивая метка промпта.
+
+    Её хватает, чтобы отличить два промпта друг от друга и сличить сегодняшний
+    прогон со вчерашним. Её не хватает, чтобы восстановить хоть один из них.
+    """
+    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()[:n]
+
+
+def describe_mismatch(delivered, expected):
+    """Сказать, ЧЕМ два промпта разошлись, не воспроизводя ни одного.
+
+    Раньше диагностика печатала первые 70 знаков того, что пришло на самом
+    деле. Но если роль не дошла, эти 70 знаков — чужой системный промпт, и он
+    попадал в results.jsonl и на терминал. Длина, метка и точка расхождения
+    отвечают на все вопросы, на которые отвечала выдержка, и не воспроизводят
+    ничего.
+    """
+    delivered, expected = delivered or "", expected or ""
+    common = 0
+    for a, b in zip(delivered, expected):
+        if a != b:
+            break
+        common += 1
+    return ("доставлено %d знаков [%s], ожидалось %d [%s]; совпадает первых %d"
+            % (len(delivered), fingerprint(delivered),
+               len(expected), fingerprint(expected), common))
 
 def find_transcript(session_id):
     """By session id, not by reproducing the directory-slug rule: that rule is

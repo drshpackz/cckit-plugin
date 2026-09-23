@@ -23,7 +23,8 @@ import uuid
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from cckit_core import (LINK_VARS, MEMORY_BLOCK,  # noqa: E402
+from cckit_core import (describe_mismatch, fingerprint,
+                        LINK_VARS, MEMORY_BLOCK,  # noqa: E402
                         find_transcript, isolated_env, projects_dir,
                         run_claude, system_prompt_parts)
 from cckit_core import launch_argv as core_launch_argv  # noqa: E402
@@ -363,14 +364,15 @@ def probe_prompt(home, project, body):
     first = first.strip()
     want = body.strip()
     if not first.startswith(want):
-        head = first[:70].replace("\n", " ")
-        return "НЕ ДОСТАВЛЕН", "промпт начинается не телом роли (частей %d): «%s…»" % (len(parts), head)
+        return "НЕ ДОСТАВЛЕН", "промпт начинается не телом роли (частей %d): %s" % (
+            len(parts), describe_mismatch(first, want))
     # With `memory: project` the CLI appends its own Persistent Agent Memory
     # block to the same part. Anything else after the body means something
     # unexpected was injected between the role and the model.
     rest = first[len(want):].strip()
     if rest and not rest.startswith(MEMORY_BLOCK):
-        return "ЧУЖАЯ ДОБАВКА", "после тела роли идёт не блок памяти: «%s…»" % rest[:60].replace("\n", " ")
+        return "ЧУЖАЯ ДОБАВКА", "после тела роли идёт не блок памяти: %d знаков [%s]" % (
+            len(rest), fingerprint(rest))
     tail = "с блоком памяти" if rest else "без добавок"
     return "ок", "частей: %d, %s" % (len(parts), tail)
 
