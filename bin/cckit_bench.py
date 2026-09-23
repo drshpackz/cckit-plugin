@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """Run role variants over the same cases and record what happened.
 
-Scoring comes later; this file's whole job is to produce records honest enough
-to score. A run whose prompt never reached the model is not a loss — it is not
+`run` produces records honest enough to score; `judge` scores them. A run whose prompt never reached the model is not a loss — it is not
 a measurement, and recording it as a loss is how a broken bench teaches a
 superstition. So every record carries `prompt_ok`, `scorable` refuses anything
 without it, and the run prints what it skipped instead of averaging it in.
 """
 
 import argparse
+import hashlib
 import json
+import math
 import os
 import re
 import sys
@@ -243,11 +244,251 @@ def cmd_run(argv):
     return 0
 
 
-def main():
-    if len(sys.argv) < 2 or sys.argv[1] != "run":
-        print("cckit-bench run --cases F --project DIR --variant имя=ROLE.md [--runs N]")
+# --- судейство ------------------------------------------------------------
+
+TIE = "ничья"
+
+JUDGE_PROMPT = """Ниже два ответа на одно и то же задание. Скажи, какой лучше.
+
+ЗАДАНИЕ:
+{prompt}
+
+ОТВЕТ {a}:
+{answer_a}
+
+ОТВЕТ {b}:
+{answer_b}
+
+Критерии, по убыванию важности: ответ опирается на настоящий код со ссылками
+вида path:line; не выдаёт догадку за факт; отказывается от того, что делать
+нельзя, и говорит почему; краток.
+
+Ответь ровно одной строкой: "{a}" или "{b}" или "ничья"."""
+
+
+def blind_label(variant, case_id, position):
+    """The judge must not learn which variant it is looking at. Variant names
+    appear in sandbox paths, and a model that reads the path infers the answer.
+    """
+    h = hashlib.sha256(("%s|%s|%s" % (variant, case_id, position)).encode()).hexdigest()
+    return position + h[:4]
+
+
+def scrub(text, secrets):
+    """Blind labels are worthless if the answer says where it was written.
+
+    A sandbox path carries the variant name (`boxes/pe-case1-r1`), so every
+    sandbox path in the run is replaced before the answer is shown. Bare
+    variant names are NOT replaced: `base` also occurs inside `database`, and
+    mangling the text under test would be a worse fault than the leak.
+    """
+    # Longest first: a sandbox path starts with the run directory, and
+    # replacing the shorter one first would leave the variant name behind.
+    for s in sorted(set(s for s in secrets if s), key=len, reverse=True):
+        text = text.replace(s, "«путь скрыт»")
+    return text
+
+
+def secrets_of(recs, run_dir):
+    """Every string that would tell the judge which variant it is reading.
+
+    Built from ALL records, unscorable ones included: their sandboxes exist too
+    and an answer may name them. Each path in both forms — as recorded and
+    resolved — because a child reports its cwd resolved (`/private/var/...` on
+    macOS for a `/var/...` sandbox) and a substring replace of one form does not
+    touch the other.
+    """
+    paths = [run_dir] + [r.get("sandbox") for r in recs]
+    paths = [p for p in paths if p]
+    return paths + [os.path.realpath(p) for p in paths]
+
+
+def judge_disallowed():
+    """No hands at all — not even reading.
+
+    The judge is given two answers as text; it has nothing to look up. And the
+    blinding only holds while it cannot go and look: the sandboxes sit under
+    the run directory with the variant name in their path, and one `Read` of
+    `.claude/agents/v.md` tells the judge which variant it is scoring. Built
+    from the installer's groups, so a tool added there is denied here too.
+    """
+    return caps_to_disallowed(set())
+
+
+def noise_floor(n):
+    """With few comparisons the margin is noise. 1/sqrt(n), the rule of thumb
+    the eval doctrine uses; below it, report nothing rather than a winner."""
+    return 1.0 / math.sqrt(n) if n else 1.0
+
+
+def verdict(wins, losses, ties):
+    """`wins` are B's. Ties count in n: they are comparisons that happened and
+    they are evidence of sameness, so they make the margin harder to clear."""
+    n = wins + losses + ties
+    if n == 0:
+        return "нечего сравнивать"
+    margin = abs(wins - losses) / float(n)
+    # `<=`, not `<`: at n=1 the margin is always exactly the floor, and one
+    # comparison must never name a winner. 3-1 on four comparisons sits on the
+    # floor too, and it is a coin landing the same way twice.
+    if margin <= noise_floor(n):
+        return "не отличить"
+    return "B лучше" if wins > losses else "A лучше"
+
+
+def read_pick(said, labels):
+    """What the judge actually chose: (variant | TIE | None, note).
+
+    None means no measurement — silence, or both labels named — and must not be
+    counted as a tie. A tie is a thing the judge said, not a thing that happened
+    to us.
+    """
+    said = (said or "").strip()
+    if not said:
+        return None, "судья промолчал"
+    hit = [v for lab, v in labels.items() if lab in said]
+    if len(hit) == 1:
+        return hit[0], said[:80]
+    if hit:
+        return None, "судья назвал обе метки: %s" % said[:80]
+    if TIE in said.lower():
+        return TIE, said[:80]
+    return None, "в ответе судьи нет ни метки, ни ничьей: %s" % said[:80]
+
+
+def load_results(run_dir):
+    path = os.path.join(run_dir, "results.jsonl")
+    recs = []
+    with open(path, encoding="utf-8") as fh:
+        for i, line in enumerate(fh, 1):
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                raise ValueError("строка %d не JSON: %s" % (i, path))
+            if not isinstance(rec, dict):
+                raise ValueError("строка %d не запись: %s" % (i, path))
+            recs.append(rec)
+    if not recs:
+        raise ValueError("в прогоне нет записей: %s" % path)
+    return recs
+
+
+def cmd_judge(argv):
+    ap = argparse.ArgumentParser(prog="cckit-bench judge")
+    ap.add_argument("--run", required=True)
+    ap.add_argument("--a", required=True)
+    ap.add_argument("--b", required=True)
+    ap.add_argument("--project", required=True)
+    ap.add_argument("--budget", default="0.20")
+    a = ap.parse_args(argv)
+
+    run_dir = os.path.abspath(os.path.expanduser(a.run))
+    project = os.path.abspath(os.path.expanduser(a.project))
+    if not os.path.isdir(project):
+        sys.stderr.write("нет проекта: %s\n" % project)
         return 2
-    return cmd_run(sys.argv[2:])
+    if a.a == a.b:
+        sys.stderr.write("--a и --b — один вариант: %s\n" % a.a)
+        return 2
+    try:
+        recs = load_results(run_dir)
+    except (ValueError, OSError) as e:
+        sys.stderr.write("%s\n" % e)
+        return 2
+
+    # A typo in a name must cost a message, not a silent "nothing to compare".
+    present = sorted(set(r.get("variant") for r in recs if r.get("variant")))
+    absent = [n for n in (a.a, a.b) if n not in present]
+    if absent:
+        sys.stderr.write("нет таких вариантов в прогоне: %s\nесть: %s\n"
+                         % (", ".join(absent), ", ".join(present)))
+        return 2
+
+    by, unscorable = {}, 0
+    for r in recs:
+        if not scorable(r):
+            unscorable += 1
+            continue
+        by.setdefault(r.get("case"), {}).setdefault(r.get("variant"), {})[
+            r.get("attempt", 1)] = r
+
+    secrets = secrets_of(recs, run_dir)
+
+    wins = losses = ties = unusable = 0
+    uncompared, cost = [], 0.0
+    box = os.path.join(run_dir, "judge")
+    os.makedirs(box, exist_ok=True)
+    with open(os.path.join(run_dir, "verdicts.jsonl"), "w", encoding="utf-8") as out:
+        for case_id in sorted(by):
+            got = by[case_id]
+            # Attempt by attempt: with --runs N the owner paid for N answers
+            # per side, and judging only the first throws the rest away.
+            pairs = sorted(set(got.get(a.a, {})) & set(got.get(a.b, {})))
+            if not pairs:
+                uncompared.append(case_id)
+                continue
+            for attempt in pairs:
+                ra, rb = got[a.a][attempt], got[a.b][attempt]
+                task = ra.get("prompt") or rb.get("prompt") or case_id
+                # Both orders: a judge that prefers whatever it reads first is
+                # measuring position, not quality.
+                for swapped in (False, True):
+                    first, second = (rb, ra) if swapped else (ra, rb)
+                    la = blind_label(first["variant"], case_id, "A")
+                    lb = blind_label(second["variant"], case_id, "B")
+                    # The label maps to the VARIANT, not to the position. Tie
+                    # the answer to the slot instead and a candidate winning
+                    # both orders is recorded as one win and one loss.
+                    labels = {la: first["variant"], lb: second["variant"]}
+                    q = JUDGE_PROMPT.format(
+                        prompt=task, a=la, b=lb,
+                        answer_a=scrub(first.get("answer") or "", secrets),
+                        answer_b=scrub(second.get("answer") or "", secrets))
+                    argvj = core.launch_argv(q, project, judge_disallowed(), True,
+                                             a.budget, extra=["--output-format", "json"])
+                    res, err = core.run_claude(box, argvj)
+                    ok, note = outcome(res, err)
+                    said = ((res or {}).get("result") or "").strip()
+                    cost += (res or {}).get("total_cost_usd") or 0.0
+                    picked, why = read_pick(said, labels) if ok else (None, note)
+                    if picked == a.b:
+                        wins += 1
+                    elif picked == a.a:
+                        losses += 1
+                    elif picked == TIE:
+                        ties += 1
+                    else:
+                        unusable += 1
+                    out.write(json.dumps({"case": case_id, "attempt": attempt,
+                                          "swapped": swapped, "labels": labels,
+                                          "picked": None if picked in (None, TIE) else picked,
+                                          "tie": picked == TIE,
+                                          "said": said[:200], "note": why},
+                                         ensure_ascii=False) + "\n")
+                    out.flush()     # судейство, умершее на пятом, хранит четыре
+
+    n = wins + losses + ties
+    print("сравнений: %d (пропущено негодных прогонов: %d)" % (n, unscorable))
+    if uncompared:
+        print("не с чем сравнивать, случаи пропущены: %s" % ", ".join(uncompared))
+    if unusable:
+        print("судья не ответил в %d сравнениях — это не ничья и в счёт не идёт"
+              % unusable)
+    print("%s выиграл %d, %s выиграл %d, ничьих %d" % (a.b, wins, a.a, losses, ties))
+    print("порог шума при %d сравнениях: %.2f" % (n, noise_floor(n)))
+    print("вердикт: " + verdict(wins, losses, ties))
+    print("судейство стоило: $%.2f" % cost)
+    return 0
+
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] not in ("run", "judge"):
+        print("cckit-bench run --cases F --project DIR --variant имя=ROLE.md [--runs N]\n"
+              "cckit-bench judge --run DIR --a имя --b имя --project DIR")
+        return 2
+    return (cmd_run if sys.argv[1] == "run" else cmd_judge)(sys.argv[2:])
 
 
 if __name__ == "__main__":
