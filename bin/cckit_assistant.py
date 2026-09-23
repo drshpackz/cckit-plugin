@@ -368,7 +368,7 @@ def trust(paths):
     json.dump(data, open(claude_json(), "w", encoding="utf-8"), indent=2)
 
 
-def run_assistant(home, project, prompt, budget="0.60"):
+def run_assistant(home, project, prompt, budget="0.60", timeout=600):
     """Always through the instance's own launch.json: the probe must exercise
     the exact command the assistant really runs under, not an approximation."""
     lp = os.path.join(home, "launch.json")
@@ -381,7 +381,7 @@ def run_assistant(home, project, prompt, budget="0.60"):
                            extra=["--output-format", "json"])
     except Exception as e:
         return None, str(e)
-    return run_claude(home, argv)
+    return run_claude(home, argv, timeout=timeout)
 
 
 def probe_containment(home, project):
@@ -692,11 +692,15 @@ def cmd_where(argv):
     die("не нашёл экземпляр: " + want, 1)
 
 
-def find_instance(want):
+def find_instance(want, required=True):
+    """required=False — вернуть None вместо выхода: у зовущего своё сообщение,
+    и оно полезнее общего «не нашёл»."""
     for it in instances():
         name = display_name(it)
         if want in (name, it.get("uuid")):
             return it
+    if not required:
+        return None
     die("не нашёл экземпляр: " + want, 1)
 
 
@@ -860,9 +864,63 @@ def cmd_show(argv):
     return 0
 
 
-def main():
-    if len(sys.argv) < 2:
-        print("cckit assistant install <роль> --project DIR [--grant a,b] [--i-mean-it] [--force]\n"
+def cmd_run(argv):
+    """Поручить работу поставленному ассистенту.
+
+    До этой команды плагин умел поставить, осмотреть, выдать права и снести —
+    и не умел дать работу. Человек, поставивший его с GitHub, получал
+    ассистента, которого не может запустить: задания раздавались личным CLI,
+    в плагин не входящим.
+
+    Запуск синхронный и через собственный `launch.json` экземпляра — тот же
+    путь, которым идут пробы. Фоновых сессий здесь нет нарочно: они тянут за
+    собой жизненный цикл, которого у плагина пока нет.
+    """
+    if len(argv) < 2:
+        sys.stderr.write('cckit assistant run <экземпляр> "задание" '
+                         "[--budget N] [--timeout СЕК]\n")
+        return 2
+    want, prompt, rest = argv[0], argv[1], argv[2:]
+    budget, timeout = None, 900
+    i = 0
+    while i < len(rest):
+        if rest[i] == "--budget" and i + 1 < len(rest):
+            budget = rest[i + 1]; i += 2
+        elif rest[i] == "--timeout" and i + 1 < len(rest):
+            timeout = int(rest[i + 1]); i += 2
+        else:
+            sys.stderr.write("непонятный ключ: %s\n" % rest[i]); return 2
+
+    it = find_instance(want, required=False)
+    if not it:
+        sys.stderr.write("нет такого экземпляра: %s\n"
+                         "  что стоит: cckit assistant list --all\n" % want)
+        return 2
+    home = it["home"]
+    if not os.path.exists(os.path.join(home, "launch.json")):
+        sys.stderr.write("нет рецепта запуска в %s — переустановите "
+                         "(install --force память не трогает)\n" % home)
+        return 2
+
+    res, err = run_assistant(home, it.get("project", ""), prompt,
+                             budget or "0.60", timeout=timeout)
+    if err or not res:
+        sys.stderr.write("не выполнено: %s\n" % (err or "пустой ответ"))
+        return 1
+    answer = (res.get("result") or "").strip()
+    print(answer)
+    cost = res.get("total_cost_usd")
+    if cost is not None:
+        sys.stderr.write("\nстоило: $%.3f · сессия %s\n"
+                         % (cost, res.get("session_id") or "?"))
+    return 0
+
+
+def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if not argv:
+        print('cckit assistant run <экземпляр> "задание" [--budget N] [--timeout СЕК]\n'
+              "cckit assistant install <роль> --project DIR [--grant a,b] [--i-mean-it] [--force]\n"
               "cckit assistant list [--all] [--json] · tree · show <экз> · where <экз> [--path]\n"
               "cckit assistant grant|revoke <экз> <возможности> [--i-mean-it] [--override-owner-rule]\n"
               'cckit assistant owner-rule <экз> deny <возможность> "дословные слова владельца"\n'
@@ -870,7 +928,9 @@ def main():
               "возможности: " + ", ".join(sorted(CAPS)) + "\n"
               "за песочницу выводят: " + ", ".join(sorted(DANGEROUS)))
         return 2
-    cmd, rest = sys.argv[1], sys.argv[2:]
+    cmd, rest = argv[0], argv[1:]
+    if cmd == "run":
+        return cmd_run(rest)
     if cmd == "install":
         return cmd_install(rest)
     if cmd == "list":
