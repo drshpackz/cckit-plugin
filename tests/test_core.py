@@ -41,6 +41,9 @@ class TestInstallerWrapper(unittest.TestCase):
         # («the Agent or Task tool»); было названо одно, и второе не
         # запрещалось ничем. Снимок потребовал решения, а не подстроился
         # молча — ради этого он и стоит.
+        # 2026-09-24: добавлен --setting-sources project,local — изоляция
+        # скиллов. Без неё экземпляр видел 32 скилла, включая личный скилл
+        # владельца. Замер: docs/findings/2026-09-24-izolyaciya-skillov-*.
         self.assertEqual(
             cckit_assistant.launch_argv("/h", "/p", "q", {"read"}, "0.5"),
             ["claude", "-p", "q", "--add-dir", "/p", "--max-budget-usd", "0.5",
@@ -50,7 +53,8 @@ class TestInstallerWrapper(unittest.TestCase):
              "Monitor", "NotebookEdit", "PushNotification", "RemoteTrigger",
              "ReportFindings", "ScheduleWakeup", "SendMessage", "Skill",
              "Task", "TaskStop", "ToolSearch", "WebFetch", "WebSearch",
-             "Workflow", "Write", "--strict-mcp-config"])
+             "Workflow", "Write", "--strict-mcp-config",
+             "--setting-sources", "project,local"])
 
 
 class TestClaudeIsFound(unittest.TestCase):
@@ -157,3 +161,27 @@ class TestDiagnosticReproducesNothing(unittest.TestCase):
     def test_an_empty_delivered_prompt_is_described_not_crashed(self):
         self.assertIn("доставлено 0 знаков", core.describe_mismatch("", "тело"))
         self.assertIn("доставлено 0 знаков", core.describe_mismatch(None, "тело"))
+
+
+class TestSkillIsolation(unittest.TestCase):
+    """Скиллы экземпляра — его, а не те, что случайно лежат у владельца.
+
+    Измерено 2026-09-24: без изоляции ассистент видит 32 скилла, включая
+    личный скилл владельца, написанный часом ранее и ему не выданный. Роль от
+    этого ведёт себя по-разному на разных машинах, а замеры стенда
+    невоспроизводимы у другого человека.
+
+    CLAUDE_CONFIG_DIR для той же цели НЕ ГОДИТСЯ: учётные данные лежат внутри
+    конфигкаталога, и подмена ломает авторизацию раньше, чем изолирует
+    (rc=1, «Not logged in», модель не зовётся).
+    """
+
+    def test_every_launch_isolates_the_setting_sources(self):
+        argv = core.launch_argv("q", "/p", [], True, "0.5")
+        self.assertIn("--setting-sources", argv)
+        self.assertEqual(argv[argv.index("--setting-sources") + 1], "project,local")
+
+    def test_isolation_holds_even_with_no_denylist_and_no_mcp_flag(self):
+        # Флаг не должен зависеть от соседних ветвей: изоляция нужна всегда.
+        argv = core.launch_argv("q", "/p", [], False, "0.5")
+        self.assertIn("--setting-sources", argv)

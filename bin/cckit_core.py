@@ -46,6 +46,12 @@ def launch_argv(prompt, project, disallowed, strict_mcp, budget, extra=None):
         argv.extend(disallowed)
     if strict_mcp:
         argv.append("--strict-mcp-config")
+    # Изоляция скиллов. Без неё экземпляр видит всё, что случайно лежит у
+    # владельца машины в ~/.claude/skills — измерено: 32 видимых скилла,
+    # включая личный скилл владельца, ему не выданный. Свои скиллы экземпляра
+    # лежат в <дом>/.claude/skills, а cwd ребёнка == дом, то есть это источник
+    # project — он сохраняется.
+    argv += ["--setting-sources", "project,local"]
     if extra:
         argv.extend(extra)
     return argv
