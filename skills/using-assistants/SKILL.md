@@ -5,9 +5,15 @@ description: Use when work needs digging that outlives this conversation — rea
 
 # You have assistants
 
-An assistant is a separate, long-lived Claude session bound to one project. It
-has its own brain, its own memory, and a fence that was tested at install time.
-It is not a subagent: it survives this conversation and keeps what it learned.
+An assistant is a separate, long-lived Claude session bound to one project,
+with its own brain, its own memory, and a fence that was tested at install
+time. It is not a subagent: it survives this conversation and keeps what it
+learned.
+
+**It works for you.** You brief it, you read what it produces, you replace it
+when it stops earning its keep. Hand it the digging and keep building while it
+digs — do not stop and ask permission for each task. Ask only where the cost
+is one-sided: leaving the sandbox, spending past its ceiling, hiring a new one.
 
 Reach for one when the work is **collecting**, not deciding — and when you will
 want the result again. Do the deciding yourself.
@@ -16,8 +22,8 @@ want the result again. Do the deciding yourself.
 |---|---|
 | make a new assistant | `cckit:create-agent` |
 | see who serves this project | `cckit:list-agents` |
-| find one someone already published | `cckit:find-agent` |
+| find one someone published | `cckit:find-agent` |
 
-Already installed? Give it work directly — `cckit assistant list` (или `python3 "${CLAUDE_PLUGIN_ROOT}/bin/cckit_assistant.py" list`) shows who is
-here. Keep doing the work yourself when it is a single question with a single
-answer: an assistant costs a cold start every time.
+Already installed? `cckit assistant list` shows who is here; give it work
+directly. Keep doing it yourself when it is one question with one answer: an
+assistant costs a cold start every time.
