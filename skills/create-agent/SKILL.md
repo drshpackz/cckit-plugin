@@ -19,6 +19,23 @@ in two.
 3. **What must it never do?** Build, run, commit — name them.
 4. **Which project?** An absolute path.
 
+## Assemble from the library
+
+Do not write an assistant from scratch when a proven part exists. Read `LIBRARY.md` at the
+plugin root and pick parts by the interview answers. Declare only parts marked **работает**
+there; a part that is not wired yet goes into `ROLE.md` as an instruction, not into the card.
+
+| the assistant… | take |
+|---|---|
+| reports to the main agent | `hooks: [report-done]` |
+| keeps `LEARNED.md` | `lint-learned` |
+| must not redo research that is already current | a ledger + `read-ledger` |
+| writes findings other agents will build on | the seed-record format, `formats/seed-record/TEMPLATE.md`: `formats: [seed-record]`; until the installer delivers it, name the template in `ROLE.md` |
+| has work that splits into independent parts | grant `spawn`, and say in `ROLE.md` which parts go to subagents — the model does not split on its own |
+| runs long tasks | a 1M-context model and `compact_at` near the window |
+
+Why each one helps, with numbers: the `speed-patterns` skill.
+
 ## The card
 
 `~/.cckit/library/<role>/card.yaml`:
@@ -28,11 +45,13 @@ name: doc-scout
 summary: One line. This becomes the agent's description.
 access: write-scoped        # read-only | write-scoped
 writes: ["docs/notes/**"]   # omit for read-only
-model: claude-opus-5
+model: claude-opus-5-5[1m]  # 1M window; without 1M access: claude-opus-5-5
 effort: xhigh               # low|medium|high|xhigh|max
+compact_at: 900000          # near the model window, not 200000
 budget_usd: 3.00            # hard ceiling per run
 hooks: [report-done, lint-learned]   # + read-ledger if it has a ledger
 ledger: docs/notes/STATE.md # what read-ledger puts in every session
+formats: [seed-record]      # findings for other agents; see LIBRARY.md
 ```
 
 `~/.cckit/library/<role>/ROLE.md` is the **system prompt** — it replaces Claude
