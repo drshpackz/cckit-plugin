@@ -22,6 +22,7 @@
 
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 
@@ -124,7 +125,217 @@ def report_done(cfg, payload):
         _fail("report-done", "не записать %s: %s" % (path, e))
 
 
-# ── PostToolUse (Write|Edit) ──────────────────────────────────────────────
+# ── PreToolUse (Write|Edit|MultiEdit|Bash) ────────────────────────────────
+#
+# Линтер висел на PostToolUse, и его «block» запись НЕ отменял. Измерено
+# 2026-09-24: субагент дописал в LEARNED.md запись без статуса, хук сработал,
+# причина до субагента дошла — а строка осталась на диске. PostToolUse зовут
+# ПОСЛЕ того, как правка легла; отказать записи можно только ДО неё.
+#
+# Поэтому хук сам вычисляет файл таким, каким он станет после правки, и
+# отказывает, если линтер недоволен. Отказ PreToolUse держит и под bypass, и
+# на вызовах субагентов — проверено живым запуском 2026-09-24 (haiku, `-p`,
+# bypassPermissions: правка основного потока и правка субагента не легли).
+
+LEARNED = "LEARNED.md"
+
+
+def _is_learned(path):
+    return isinstance(path, str) and os.path.basename(path) == LEARNED
+
+
+def _read_or_none(path):
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return fh.read()
+    except FileNotFoundError:
+        return None
+
+
+def _apply_edit(text, old, new, replace_all):
+    """Текст после одной правки Edit — или None, если Edit откажет сам.
+
+    None здесь не «разрешить молча», а «не смог предсказать»: у Edit есть
+    своя нормализация (кавычки, переводы строк), и там, где предсказание
+    промахнулось, вызывающий проверяет саму вставку (см. `_fragment_only`).
+    """
+    if text is None:
+        return new if old == "" else None
+    if old == "":
+        return new if text == "" else None
+    n = text.count(old)
+    if n == 0 or (n > 1 and not replace_all):
+        return None
+    return text.replace(old, new) if replace_all else text.replace(old, new, 1)
+
+
+def _after_write(tool, ti, cwd):
+    """(путь, текст до, текст после) для правки LEARNED.md.
+
+    None — не наш файл. Текст после — None, если правку не удалось
+    воспроизвести; тогда судят по вставке, а не пропускают."""
+    path = ti.get("file_path")
+    if not _is_learned(path):
+        return None
+    if not os.path.isabs(path):
+        path = os.path.join(cwd or os.getcwd(), path)
+    before = _read_or_none(path)
+    if tool == "Write":
+        content = ti.get("content")
+        return path, before or "", content if isinstance(content, str) else None
+    if tool == "Edit":
+        edits = [ti]
+    elif tool == "MultiEdit":
+        edits = ti.get("edits") or []
+    else:
+        return None
+    text = before
+    for e in edits:
+        if not isinstance(e, dict):
+            return path, before or "", None
+        text = _apply_edit(text, e.get("old_string") or "",
+                           e.get("new_string") or "", bool(e.get("replace_all")))
+        if text is None:
+            return path, before or "", None
+    return path, before or "", text
+
+
+def _fragment_only(ti):
+    """Всё, что правка ВСТАВЛЯЕТ, одной строкой — для случая, когда файл
+    после правки не вычислить. Запись без статуса во вставке видна и так."""
+    parts = []
+    for e in ([ti] + list(ti.get("edits") or [])):
+        if isinstance(e, dict):
+            for k in ("new_string", "content"):
+                if isinstance(e.get(k), str):
+                    parts.append(e[k])
+    return "\n".join(parts)
+
+
+def _new_problems(lint, before, after):
+    """Только то, чего не было ДО правки. Файл, где уже лежит старая запись
+    без статуса, иначе запирал бы любую запись, в том числе исправляющую —
+    и ассистент ушёл бы писать через Bash, мимо линтера."""
+    left = {}
+    for m in lint(before):
+        left[m] = left.get(m, 0) + 1
+    out = []
+    for m in lint(after):
+        if left.get(m, 0) > 0:
+            left[m] -= 1
+        else:
+            out.append(m)
+    return out
+
+
+# Запись в LEARNED.md через Bash. ЭВРИСТИКА, и цена названа вслух: она ловит
+# очевидные формы (перенаправление, tee, sed/perl -i, cp/mv/dd поверх файла,
+# однострочник интерпретатора с открытием на запись), а обходится чем угодно
+# ещё — путь в переменной (`f=LEARN; … > "${f}ED.md"`), глоб (`LEARN*.md`),
+# скрипт из файла, запись в другой файл и `mv` без имени в той же строке,
+# symlink. Разобрать шелл честно нельзя; всё, что здесь не узнано, ложится
+# мимо линтера молча, как и раньше. Ложный отказ — только когда имя стоит
+# ЦЕЛЬЮ записи; чтение (`cat`, `grep`, `sed -n`, `cp LEARNED.md куда-то`) не
+# трогается.
+_TOK = r"""["']?[^\s;|&<>()"']*LEARNED\.md(?![\w.])["']?"""
+_BASH_WRITES = (
+    ("перенаправление в файл", re.compile(r">\|?\s*" + _TOK)),
+    ("tee", re.compile(r"\btee\b[^;|&]*\s" + _TOK)),
+    ("правка на месте (sed/perl -i)",
+     re.compile(r"\b(?:g?sed|perl)\b(?=[^;|&]*\s-[a-zA-Z]*i)[^;|&]*\s" + _TOK)),
+    ("cp/mv/install/rsync поверх файла",
+     re.compile(r"\b(?:cp|mv|install|rsync)\b[^;|&]*\s" + _TOK + r"\s*(?:$|[;|&)])")),
+    ("dd of=", re.compile(r"\bdd\b[^;|&]*\bof=" + _TOK)),
+)
+_INTERP = re.compile(r"\b(?:python[0-9.]*|node|ruby|perl|php|deno|bun)\b")
+_INTERP_WRITE = re.compile(
+    r"write_text|write_bytes|writeFile|appendFile|createWriteStream"
+    r"|File\.(?:write|open)|open\s*\([^)]*,\s*(?:mode\s*=\s*)?['\"][^'\"]*[wax+]")
+
+
+def _bash_learned_write(cmd):
+    """Какой формой команда пишет в LEARNED.md, или None."""
+    if not isinstance(cmd, str) or LEARNED not in cmd:
+        return None
+    for label, rx in _BASH_WRITES:
+        if rx.search(cmd):
+            return label
+    if _INTERP.search(cmd) and _INTERP_WRITE.search(cmd):
+        return "запись из интерпретатора"
+    return None
+
+
+def _deny(reason):
+    _emit({"hookSpecificOutput": {"hookEventName": "PreToolUse",
+                                  "permissionDecision": "deny",
+                                  "permissionDecisionReason": reason}})
+
+
+def _lint_before_write(payload):
+    tool = payload.get("tool_name") or ""
+    ti = payload.get("tool_input")
+    if not isinstance(ti, dict):
+        return
+    if tool == "Bash":
+        how = _bash_learned_write(ti.get("command"))
+        if how:
+            # Запрет назван по задаче: запись через Bash линтер проверить не
+            # может, а вписать строку правкой — одна и та же работа.
+            _deny("Запись в LEARNED.md через Bash (%s) идёт мимо линтера "
+                  "статусов. Сделайте ту же запись инструментом Edit или "
+                  "Write — линтер проверит её до того, как она ляжет на диск."
+                  % how)
+        return
+    got = _after_write(tool, ti, payload.get("cwd"))
+    if got is None:
+        return                      # не наш файл: молчание, а не отказ
+    lint = _linter("lint-learned")
+    if lint is None:
+        return
+    path, before, after = got
+    if after is None:
+        msgs = lint(_fragment_only(ti))
+    else:
+        msgs = _new_problems(lint, before, after)
+    if not msgs:
+        return
+    _deny(_reason([(path, msgs)])
+          + "\n\nЗапись НЕ легла на диск. Повторите правку со строкой статуса.")
+
+
+def _linter(name):
+    """`cckit_learned.lint` рядом с хуком, или None — и тогда сказано вслух."""
+    if HERE not in sys.path:
+        sys.path.insert(0, HERE)
+    try:
+        import cckit_learned
+    except Exception as e:
+        # Молчать тут нельзя вдвойне: снаружи «линтер не нашёлся» и «линтер
+        # промолчал» — одно и то же, и второе означает, что запись прошла.
+        _fail(name,
+              "линтер рядом с хуком не читается (%s) — запись без статуса "
+              "прошла бы непроверенной" % e)
+        return None
+    return cckit_learned.lint
+
+
+def _reason(problems):
+    parts = []
+    for p, msgs in problems:
+        parts.append(p + ":")
+        parts += ["  " + m for m in msgs]
+    return ("Запись без статуса через месяц читается как измеренный факт — "
+            "и тот, кто её прочтёт, не отличит догадку от замера.\n"
+            + "\n".join(parts)
+            + "\n\nДопишите строку статуса: **Статус: измерено** "
+              "(или наблюдение / гипотеза / слово владельца), с датой и "
+              "числом случаев.")
+
+
+# ── PostToolUse (Write|Edit) — старая регистрация ─────────────────────────
+# Дом, поставленный до переноса в PreToolUse, зовёт хук здесь, пока его не
+# переустановят. Такой «block» запись не отменяет — проба хуков называет эту
+# регистрацию устаревшей.
 
 def _edited_paths(payload):
     ti = payload.get("tool_input")
@@ -139,23 +350,18 @@ def _edited_paths(payload):
 
 
 def lint_learned(cfg, payload):
-    """Тронут LEARNED.md — прогнать линтер. Сегодня его зовут руками, и
-    запись без статуса доживает до коммита, где через месяц читается как
-    измеренный факт."""
-    targets = [p for p in _edited_paths(payload)
-               if os.path.basename(p) == "LEARNED.md"]
+    """Правка LEARNED.md — прогнать линтер ДО записи и отказать ей.
+
+    Регистрация — PreToolUse; PostToolUse остаётся только для домов,
+    поставленных раньше (см. раздел выше)."""
+    if payload.get("hook_event_name") != "PostToolUse":
+        _lint_before_write(payload)
+        return
+    targets = [p for p in _edited_paths(payload) if _is_learned(p)]
     if not targets:
         return                      # не наш файл: молчание, а не отказ
-    if HERE not in sys.path:
-        sys.path.insert(0, HERE)
-    try:
-        import cckit_learned
-    except Exception as e:
-        # Молчать тут нельзя вдвойне: снаружи «линтер не нашёлся» и «линтер
-        # промолчал» — одно и то же, и второе означает, что запись прошла.
-        _fail("lint-learned",
-              "линтер рядом с хуком не читается (%s) — запись без статуса "
-              "прошла бы непроверенной" % e)
+    lint = _linter("lint-learned")
+    if lint is None:
         return
     problems = []
     for p in targets:
@@ -165,21 +371,12 @@ def lint_learned(cfg, payload):
         except OSError as e:
             _fail("lint-learned", "не прочитать %s: %s" % (p, e))
             continue
-        msgs = cckit_learned.lint(text)
+        msgs = lint(text)
         if msgs:
             problems.append((p, msgs))
     if not problems:
         return
-    parts = []
-    for p, msgs in problems:
-        parts.append(p + ":")
-        parts += ["  " + m for m in msgs]
-    reason = ("Запись без статуса через месяц читается как измеренный факт — "
-              "и тот, кто её прочтёт, не отличит догадку от замера.\n"
-              + "\n".join(parts)
-              + "\n\nДопишите строку статуса: **Статус: измерено** "
-                "(или наблюдение / гипотеза / слово владельца), с датой и "
-                "числом случаев.")
+    reason = _reason(problems)
     _emit({"decision": "block", "reason": reason,
            "hookSpecificOutput": {"hookEventName": "PostToolUse",
                                   "additionalContext": reason}})

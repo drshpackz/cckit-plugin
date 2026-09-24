@@ -49,7 +49,7 @@ cckit assistant run design-scout@myrepo "какой настройкой зад�
 `cckit assistant where <id>`; change what it may do with
 `cckit assistant grant` and `cckit assistant revoke`, and pin a decision of
 your own with
-`cckit assistant owner-rule`, which outranks the agent.
+`cckit assistant owner-rule`, which outranks the agent. `cckit assistant retire <id>` takes a home out of service by moving it to `<assistants>/.attic/<name>/<time>` — never deleting it — and refuses a home with a live session unless given `--i-mean-it`.
 
 ## Measure a change instead of believing it
 
@@ -101,7 +101,7 @@ ledger: docs/vscode-internals/STATE.md     # what read-ledger delivers
 ```
 
 - `report-done` (Stop) — one line per finished turn in `<home>/reports.jsonl`;
-- `lint-learned` (PostToolUse on Write|Edit) — a `LEARNED.md` record without a
+- `lint-learned` (PreToolUse on Write|Edit|MultiEdit|Bash — refuses before the write; through Bash it is a heuristic) — a `LEARNED.md` record without a
   status is blocked with the reason;
 - `read-ledger` (SessionStart) — the project's ledger goes into the session's
   context, so a section already marked current is not researched again.

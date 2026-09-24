@@ -66,21 +66,24 @@ def launch_argv(prompt, project, disallowed, strict_mcp, budget, extra=None):
 PEOPLE_SETTING_SOURCES = "user,project,local"
 
 
-def people_argv(prompt, budget, extra=None):
+def people_argv(prompt, budget, extra=None, strict_mcp=True):
     """Путь людей, повторённый для пробы. Не для работы — для проверки.
 
     Отличий от вкладки ровно два, и оба названы:
       * `-p` вместо интерактивного окна — иначе пробу некому вести;
-      * `--strict-mcp-config` остаётся. Проба просит модель пробовать
-        запрещённое «любым способом», а MCP-серверы владельца умеют писать в
-        его живые сессии. Ось MCP эта проба поэтому НЕ проверяет.
+      * `--strict-mcp-config` остаётся по умолчанию. Проба просит модель
+        пробовать запрещённое «любым способом», а MCP-серверы владельца умеют
+        писать в его живые сессии. Ось MCP такие пробы поэтому НЕ проверяют —
+        её проверяет одна проба, `strict_mcp=False`, которая просит модель
+        только ИСКАТЬ (ToolSearch), а не звать.
     Всё остальное, что ставит `launch_argv` — --disallowedTools и --add-dir —
     здесь отсутствует нарочно: проба, получившая их, проверяет argv, а не дом.
     """
     argv = ["claude", "-p", prompt,
             "--setting-sources", PEOPLE_SETTING_SOURCES,
-            "--max-budget-usd", str(budget or "1.00"),
-            "--strict-mcp-config"]
+            "--max-budget-usd", str(budget or "1.00")]
+    if strict_mcp:
+        argv.append("--strict-mcp-config")
     if extra:
         argv.extend(extra)
     return argv
@@ -124,6 +127,132 @@ def offered_tools(events):
             if isinstance(tools, list):
                 return [t for t in tools if isinstance(t, str)]
     return None
+
+
+def mcp_servers(events):
+    """MCP-серверы из события `init`: [(имя, состояние)], или None без init.
+
+    Имена отсюда, а не из конфигов: коннекторы claude.ai приходят с аккаунта,
+    ни в одном файле машины их нет. Измерено 2026-09-24 на `-p` путём
+    вкладки: `claude.ai Claude Docs` — `connected`, `claude.ai CCPort v6` —
+    `pending`. Состояние важно: инструменты сервера в `pending` в набор init
+    ещё не попали, и пустота набора о нём не говорит ничего."""
+    for d in events or ():
+        if d.get("type") == "system" and d.get("subtype") == "init":
+            out = []
+            for s in d.get("mcp_servers") or ():
+                if isinstance(s, dict) and isinstance(s.get("name"), str):
+                    out.append((s["name"], str(s.get("status") or "?")))
+            return out
+    return None
+
+
+def transcript_mcp_pending(path):
+    """Какие MCP-серверы ещё НЕ на связи к концу сессии, по стенограмме.
+
+    Харнесс пишет `deferred_tools_delta` с полями `pendingMcpServers`,
+    `failedMcpServers`, `needsAuthMcpServers` — и повторяет их, когда сервер
+    доподключился (измерено 2026-09-24: CCPort в первой дельте `pending`, во
+    второй — нет). Сервер, который был `pending` в init и исчез из последнего
+    списка, был на связи, и пустота его инструментов — уже улика.
+    Возвращает множество имён «не на связи» или None, если дельт не было."""
+    last = None
+    with open(path, encoding="utf-8", errors="ignore") as fh:
+        for line in fh:
+            try:
+                d = json.loads(line)
+            except Exception:
+                continue
+            a = d.get("attachment")
+            if not isinstance(a, dict) or a.get("type") != "deferred_tools_delta":
+                continue
+            if not any(k in a for k in ("pendingMcpServers", "failedMcpServers",
+                                        "needsAuthMcpServers")):
+                continue
+            last = set()
+            for k in ("pendingMcpServers", "failedMcpServers", "needsAuthMcpServers"):
+                last |= set(n for n in (a.get(k) or ()) if isinstance(n, str))
+    return last
+
+
+def found_tool_names(events):
+    """Имена, которые харнесс вернул модели как найденные (ToolSearch отдаёт
+    блоки `tool_reference`). Только структурные поля: имя, не содержимое.
+
+    Нужны потому, что init — снимок на старте: сервер, подключившийся позже,
+    в нём не виден, а ToolSearch его инструменты находит (измерено: 13
+    инструментов CCPort при `pending` в init)."""
+    out = []
+    for d in events or ():
+        m = d.get("message")
+        content = m.get("content") if isinstance(m, dict) else None
+        if not isinstance(content, list):
+            continue
+        for b in content:
+            if not isinstance(b, dict) or b.get("type") != "tool_result":
+                continue
+            inner = b.get("content")
+            if not isinstance(inner, list):
+                continue
+            for x in inner:
+                if (isinstance(x, dict) and x.get("type") == "tool_reference"
+                        and isinstance(x.get("tool_name"), str)):
+                    out.append(x["tool_name"])
+    return out
+
+
+def sessions_dir():
+    """Где CLI регистрирует живые сессии: `<конфиг>/sessions/<pid>.json`."""
+    base = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(home(), ".claude")
+    return os.path.join(base, "sessions")
+
+
+def _pid_alive(pid):
+    if os.name == "nt":
+        # os.kill(pid, 0) на windows шлёт CTRL_C_EVENT, а не проверяет.
+        # Лучше считать сессию живой и спросить, чем уронить чужой процесс.
+        return True
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except (OSError, ValueError, TypeError):
+        return False
+    return True
+
+
+def live_sessions(folder):
+    """Живые сессии, чья рабочая папка — `folder` или внутри неё.
+
+    По реестру CLI, только структурные поля (pid, cwd, sessionId, status).
+    Файл реестра переживает упавший процесс, поэтому pid проверяется."""
+    want = os.path.realpath(folder)
+    out = []
+    d = sessions_dir()
+    try:
+        names = sorted(os.listdir(d))
+    except OSError:
+        return out
+    for n in names:
+        if not n.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(d, n), encoding="utf-8") as fh:
+                rec = json.load(fh)
+        except Exception:
+            continue
+        if not isinstance(rec, dict) or not isinstance(rec.get("cwd"), str):
+            continue
+        cwd = os.path.realpath(rec["cwd"])
+        if cwd != want and not cwd.startswith(want + os.sep):
+            continue
+        if not _pid_alive(rec.get("pid")):
+            continue
+        out.append({"pid": rec.get("pid"), "session": rec.get("sessionId"),
+                    "status": rec.get("status")})
+    return out
 
 
 def session_of(events):

@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# PostToolUse на Write|Edit: прогнать линтер по тронутому LEARNED.md.
+# PreToolUse на Write|Edit|MultiEdit|Bash: отказать записи в LEARNED.md, после
+# которой в файле появится запись без статуса. PreToolUse, а не PostToolUse:
+# «block» после записи её не отменяет (измерено 2026-09-24).
 #
 # Обёртка тонкая нарочно: весь разбор — в cckit_hook.py рядом. Те же несколько
 # строк на bash были бы `|| exit 0` в подоболочке, где неудача неотличима от
@@ -11,9 +13,18 @@
 # `set -e` здесь нет намеренно: хук не вправе уронить ход ассистента.
 set -uo pipefail
 DIR="$(cd "$(dirname "$0")" && pwd)"
+# Хук висит на КАЖДОМ Bash/Write/Edit ассистента и его субагентов, а питон
+# поднимается в разы дольше bash. Тело события без имени LEARNED.md — не наш
+# вызов: молчание здесь намеренное, «не смог» сюда не попадает (cat со входа
+# хука не падает), а всё, что называет файл, решает питон.
+payload="$(cat)"
+case "$payload" in
+	*LEARNED.md*) ;;
+	*) exit 0 ;;
+esac
 for py in python3 python; do
 	if command -v "$py" >/dev/null 2>&1; then
-		exec "$py" "$DIR/cckit_hook.py" lint-learned
+		exec "$py" "$DIR/cckit_hook.py" lint-learned <<<"$payload"
 	fi
 done
 # Питона нет — сказать об этом, а не промолчать кодом 0.

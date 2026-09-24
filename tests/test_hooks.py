@@ -122,7 +122,7 @@ class TestHookInstall(unittest.TestCase):
                        if not os.path.isfile(c.split('"')[1])]
             self.assertEqual((registered(home), missing), ({
                 "Stop": [(None, "report-done")],
-                "PostToolUse": [("Write|Edit", "lint-learned")],
+                "PreToolUse": [("Write|Edit|MultiEdit|Bash", "lint-learned")],
                 "SessionStart": [("startup|clear|compact", "read-ledger")],
             }, []))
 
@@ -254,45 +254,214 @@ class TestReportDone(unittest.TestCase):
 
 @unittest.skipIf(sys.platform == "win32", "полиглот на windows проверяется отдельно")
 class TestLintLearned(unittest.TestCase):
-    def _fire_on(self, home, path, text):
-        with open(path, "w", encoding="utf-8") as fh:
+    """PreToolUse: хук видит правку ДО записи и отказывает ей.
+
+    Хук сам на диск не пишет, так что «запись не легла» здесь — это «хук
+    отказал, а файл тот же». Что отказ CLI правда отменяет запись, меряют
+    проба хуков (поддельный CLI) и живой прогон, а не этот файл."""
+
+    def _pre(self, home, tool, ti):
+        proc = fire(home, "PreToolUse", "lint-learned",
+                    {"hook_event_name": "PreToolUse", "tool_name": tool,
+                     "cwd": home, "tool_input": ti})
+        d = out_json(proc) or {}
+        return proc, (d.get("hookSpecificOutput") or {}), d
+
+    def _learned(self, home, text):
+        p = os.path.join(home, "LEARNED.md")
+        with open(p, "w", encoding="utf-8") as fh:
             fh.write(text)
-        return fire(home, "PostToolUse", "lint-learned",
-                    {"tool_name": "Write", "tool_input": {"file_path": path}})
+        return p
 
-    def test_a_record_without_a_status_is_blocked_with_a_readable_reason(self):
+    def test_a_record_without_a_status_is_refused_before_it_is_written(self):
         with Sandbox() as sb:
             _, home = install(sb, ["hooks: [lint-learned]"])
-            proc = self._fire_on(home, os.path.join(home, "LEARNED.md"), DIRTY)
-            d = out_json(proc)
+            p = self._learned(home, CLEAN)
+            add = "\n## Новая без статуса\n\nтекст\n"
+            proc, h, _ = self._pre(home, "Edit", {
+                "file_path": p, "old_string": CLEAN, "new_string": CLEAN + add})
+            wproc, wh, _ = self._pre(home, "Write", {"file_path": p, "content": DIRTY})
+            with open(p, encoding="utf-8") as fh:
+                on_disk = fh.read()
+            reason = h.get("permissionDecisionReason") or ""
             self.assertEqual(
-                (proc.returncode, d["decision"],
-                 "Находка без статуса" in d["reason"],
-                 "измерено" in d["reason"],
-                 d["hookSpecificOutput"]["hookEventName"]),
-                (0, "block", True, True, "PostToolUse"))
+                (proc.returncode, h.get("hookEventName"), h.get("permissionDecision"),
+                 "Новая без статуса" in reason, "измерено" in reason,
+                 wh.get("permissionDecision"), on_disk == CLEAN),
+                (0, "PreToolUse", "deny", True, True, "deny", True), reason)
 
-    def test_it_stays_out_of_the_way_of_clean_files_and_other_files(self):
-        # Без этой половины «блокирует всё подряд» выглядит как успех.
+    def test_correct_records_other_files_and_reads_pass_silently(self):
+        # Без этой половины «отказывает всему подряд» выглядит как успех.
         with Sandbox() as sb:
             _, home = install(sb, ["hooks: [lint-learned]"])
-            clean = self._fire_on(home, os.path.join(home, "LEARNED.md"), CLEAN)
-            other = self._fire_on(home, os.path.join(sb.project, "NOTES.md"), DIRTY)
+            p = self._learned(home, "# Что узнал\n")
+            good = self._pre(home, "Edit", {
+                "file_path": p, "old_string": "# Что узнал\n", "new_string": CLEAN})
+            other = self._pre(home, "Write", {
+                "file_path": os.path.join(sb.project, "NOTES.md"), "content": DIRTY})
+            read = self._pre(home, "Bash", {"command": "cat %s" % p})
             self.assertEqual(
-                [(clean.returncode, clean.stdout.strip()),
-                 (other.returncode, other.stdout.strip())],
-                [(0, ""), (0, "")])
+                [(r[0].returncode, r[0].stdout.strip()) for r in (good, other, read)],
+                [(0, ""), (0, ""), (0, "")])
+
+    def test_an_old_record_without_status_does_not_lock_the_file(self):
+        # Запертый файл гонит ассистента писать через Bash, мимо линтера.
+        with Sandbox() as sb:
+            _, home = install(sb, ["hooks: [lint-learned]"])
+            p = self._learned(home, DIRTY)
+            add_clean = self._pre(home, "Edit", {
+                "file_path": p, "old_string": DIRTY,
+                "new_string": DIRTY + "\n## Вторая\n\n**Статус: гипотеза**\n"})
+            fix = self._pre(home, "Edit", {
+                "file_path": p, "old_string": "Просто текст.",
+                "new_string": "**Статус: измерено**\n\nПросто текст."})
+            add_dirty = self._pre(home, "Edit", {
+                "file_path": p, "old_string": DIRTY,
+                "new_string": DIRTY + "\n## Третья без статуса\n"})
+            reason = add_dirty[1].get("permissionDecisionReason") or ""
+            self.assertEqual(
+                (add_clean[0].stdout.strip(), fix[0].stdout.strip(),
+                 add_dirty[1].get("permissionDecision"),
+                 "Третья без статуса" in reason, "Находка без статуса" in reason),
+                ("", "", "deny", True, False), reason)
+
+    def test_an_edit_it_cannot_replay_is_judged_by_what_it_inserts(self):
+        # У Edit своя нормализация кавычек и переводов строк: не найдя
+        # old_string, хук не вправе заключить «правка не ляжет» и пропустить.
+        with Sandbox() as sb:
+            _, home = install(sb, ["hooks: [lint-learned]"])
+            p = self._learned(home, CLEAN)
+            dirty = self._pre(home, "Edit", {
+                "file_path": p, "old_string": "нет такого текста",
+                "new_string": "## Вставка без статуса\n"})
+            status_only = self._pre(home, "Edit", {
+                "file_path": p, "old_string": "нет такого текста",
+                "new_string": "**Статус: измерено**"})
+            multi = self._pre(home, "MultiEdit", {
+                "file_path": p, "edits": [
+                    {"old_string": "(один случай).", "new_string": "(один случай).\n\n## Мульти без статуса\n"}]})
+            self.assertEqual(
+                (dirty[1].get("permissionDecision"), status_only[0].stdout.strip(),
+                 multi[1].get("permissionDecision")),
+                ("deny", "", "deny"))
 
     def test_a_missing_linter_says_so_instead_of_letting_the_record_through(self):
         with Sandbox() as sb:
             _, home = install(sb, ["hooks: [lint-learned]"])
             os.remove(os.path.join(home, ".claude", "hooks", "cckit_learned.py"))
-            proc = self._fire_on(home, os.path.join(home, "LEARNED.md"), DIRTY)
-            d = out_json(proc)
+            p = self._learned(home, CLEAN)
+            proc, h, d = self._pre(home, "Write", {"file_path": p, "content": DIRTY})
             self.assertEqual(
-                (proc.returncode, "decision" in (d or {}),
-                 "lint-learned" in (d or {}).get("systemMessage", "")),
+                (proc.returncode, "permissionDecision" in h,
+                 "lint-learned" in d.get("systemMessage", "")),
                 (0, False, True))
+
+    def test_a_home_still_registered_on_post_tool_use_keeps_its_old_block(self):
+        # Дом, поставленный до переноса, зовёт тот же хук телом PostToolUse,
+        # пока его не переустановят. Молчать ему нельзя: запись уже легла.
+        with Sandbox() as sb:
+            _, home = install(sb, ["hooks: [lint-learned]"])
+            p = self._learned(home, DIRTY)
+            proc = fire(home, "PreToolUse", "lint-learned",
+                        {"hook_event_name": "PostToolUse", "tool_name": "Write",
+                         "cwd": home, "tool_input": {"file_path": p}})
+            d = out_json(proc) or {}
+            self.assertEqual((d.get("decision"), "Находка без статуса" in d.get("reason", "")),
+                             ("block", True))
+
+    def test_calls_that_do_not_name_learned_never_start_python(self):
+        # Хук висит на КАЖДОМ Bash/Write/Edit. Без питона на PATH обёртка,
+        # дошедшая до питона, говорит «нет python3» — значит молчание здесь
+        # и есть доказательство, что до него не дошло.
+        with Sandbox() as sb:
+            _, home = install(sb, ["hooks: [lint-learned]"])
+            bare = os.path.join(sb.state, "bare-bin")
+            os.makedirs(bare)
+            for tool in ("bash", "cat", "dirname"):
+                os.symlink(shutil.which(tool), os.path.join(bare, tool))
+            cmd = None
+            for g in settings(home)["hooks"]["PreToolUse"]:
+                cmd = g["hooks"][0]["command"]
+
+            def run(payload):
+                return subprocess.run(
+                    [shutil.which("bash"), "-c", cmd], input=json.dumps(payload),
+                    capture_output=True, text=True, env={"PATH": bare}).stdout.strip()
+
+            ours = run({"hook_event_name": "PreToolUse", "tool_name": "Bash",
+                        "tool_input": {"command": "cat >> LEARNED.md"}})
+            other = run({"hook_event_name": "PreToolUse", "tool_name": "Bash",
+                         "tool_input": {"command": "ls -la"}})
+            self.assertEqual(("нет python3" in ours, other), (True, ""))
+
+
+@unittest.skipIf(sys.platform == "win32", "полиглот на windows проверяется отдельно")
+class TestLintLearnedBash(unittest.TestCase):
+    """Запись в LEARNED.md через Bash — ЭВРИСТИКА, и тесты это говорят вслух.
+
+    Хуки на Write|Edit записей через Bash не видят (измерено 2026-09-24).
+    Узнать запись в строке шелла можно только по форме, и форм бесконечно
+    много. Здесь три списка: что ловится, что НЕ должно ловиться (чтение), и
+    чем эвристика обходится — последний закреплён тестом нарочно, чтобы
+    «закрыто» нельзя было сказать, не посмотрев на него."""
+
+    WRITES = [
+        "cat >> LEARNED.md <<'EOF'\n## Через heredoc\nEOF",
+        "echo '## x' >> /tmp/home/LEARNED.md",
+        "printf '## x\\n' > \"LEARNED.md\"",
+        "some-cmd | tee -a LEARNED.md",
+        "sed -i '' 's/a/b/' LEARNED.md",
+        "perl -pi -e 's/a/b/' ./LEARNED.md",
+        "cp /tmp/new.md LEARNED.md",
+        "mv /tmp/new.md ./LEARNED.md && ls",
+        "dd if=/tmp/x of=LEARNED.md",
+        "python3 -c \"open('LEARNED.md','a').write('## x')\"",
+        "node -e \"require('fs').appendFileSync('LEARNED.md','## x')\"",
+    ]
+    READS = [
+        "cat LEARNED.md",
+        "grep -n '^## ' LEARNED.md > /tmp/heads.txt",
+        "sed -n 1,20p LEARNED.md",
+        "cp LEARNED.md /tmp/backup.md",
+        "python3 bin/cckit_learned.py LEARNED.md",
+        "echo 'see LEARNED.md' > notes.txt",
+        "cat x > LEARNED.md.bak",
+        "wc -l LEARNED.md && git diff LEARNED.md",
+        "python3 -c \"print(open('LEARNED.md').read())\"",
+    ]
+    # Цена эвристики, живьём: всё это пишет в LEARNED.md и проходит.
+    BYPASSES = [
+        "f=LEARN; echo '## x' >> \"${f}ED.md\"",
+        "echo '## x' >> LEARN*.md",
+        "python3 /tmp/append_note.py",
+    ]
+
+    def _decide(self, home, command):
+        proc = fire(home, "PreToolUse", "lint-learned",
+                    {"hook_event_name": "PreToolUse", "tool_name": "Bash",
+                     "cwd": home, "tool_input": {"command": command}})
+        d = out_json(proc) or {}
+        return (d.get("hookSpecificOutput") or {}).get("permissionDecision")
+
+    def test_writes_are_refused_reads_pass_and_the_price_is_on_record(self):
+        with Sandbox() as sb:
+            _, home = install(sb, ["hooks: [lint-learned]"])
+            got = {"writes": [self._decide(home, c) for c in self.WRITES],
+                   "reads": [self._decide(home, c) for c in self.READS],
+                   "bypasses": [self._decide(home, c) for c in self.BYPASSES]}
+            self.assertEqual(got, {"writes": ["deny"] * len(self.WRITES),
+                                   "reads": [None] * len(self.READS),
+                                   "bypasses": [None] * len(self.BYPASSES)})
+
+    def test_the_refusal_says_how_to_do_the_same_write_properly(self):
+        with Sandbox() as sb:
+            _, home = install(sb, ["hooks: [lint-learned]"])
+            proc = fire(home, "PreToolUse", "lint-learned",
+                        {"hook_event_name": "PreToolUse", "tool_name": "Bash",
+                         "cwd": home, "tool_input": {"command": self.WRITES[0]}})
+            reason = ((out_json(proc) or {}).get("hookSpecificOutput") or {}) \
+                .get("permissionDecisionReason") or ""
+            self.assertEqual(("Edit" in reason, "мимо линтера" in reason), (True, True), reason)
 
 
 @unittest.skipIf(sys.platform == "win32", "полиглот на windows проверяется отдельно")

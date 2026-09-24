@@ -60,9 +60,11 @@ class TestNoToolEscapesTheDenylist(unittest.TestCase):
         # Свойство, а не заплатка: при ЛЮБОМ наборе выданных групп каждый
         # инструмент из CAPS либо принадлежит выданной группе, либо назван в
         # отказе. Середины, в которой однажды оказался Monitor, нет.
+        # Третья клетка — «выдан субагентам»: такой инструмент не в отказе
+        # сессии, но основному потоку его закрывает шапка карточки.
         everything = tools_of(ck.CAPS)
         for granted in all_subsets(ck.CAPS):
-            off = denied_tools(granted)
+            off = denied_tools(granted) | set(ck.main_thread_off(granted))
             allowed = tools_of(granted)
             for tool in everything:
                 self.assertTrue(tool in allowed or tool in off,
@@ -73,7 +75,8 @@ class TestNoToolEscapesTheDenylist(unittest.TestCase):
         for granted in all_subsets(ck.CAPS):
             self.assertEqual(
                 denied_tools(granted),
-                tools_of(set(ck.CAPS) - set(granted)) | set(ck.NEVER),
+                (tools_of(set(ck.CAPS) - set(granted)) | set(ck.NEVER))
+                - set(ck.main_thread_off(granted)),
                 "при выданных %s отказ разошёлся с выдачей" % (sorted(granted),))
 
     def test_no_tool_belongs_to_two_capability_groups(self):
@@ -107,8 +110,12 @@ class TestNoToolEscapesTheDenylist(unittest.TestCase):
 
 def bare_denies(s):
     """Голые имена инструментов в `permissions.deny` — точным сравнением, без
-    подстрок: `Edit(//p/src/**)` — запрет пути, не инструмента."""
-    return set(r for r in s["permissions"]["deny"] if "(" not in r)
+    подстрок: `Edit(//p/src/**)` — запрет пути, не инструмента.
+
+    `mcp__*` — ось серверов, не встроенный инструмент; её сверяет
+    tests/test_home_fence.py."""
+    return set(r for r in s["permissions"]["deny"]
+               if "(" not in r and r != ck.MCP_ALL)
 
 
 class TestTheRulesFileHoldsEveryDenial(unittest.TestCase):

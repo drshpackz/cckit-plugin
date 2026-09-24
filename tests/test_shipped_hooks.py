@@ -163,18 +163,20 @@ class TestShippedHooksReachTheHomeAndFire(unittest.TestCase):
                 effects["report"] = [(x["role"], x["session"]) for x in lines]
 
                 learned = os.path.join(home, "LEARNED.md")
-                with open(learned, "a", encoding="utf-8") as fh:
-                    fh.write("\n## запись без статуса\n")
-                post = run_registered(home, "PostToolUse", {
-                    "hook_event_name": "PostToolUse", "tool_name": "Edit", "cwd": home,
-                    "tool_input": {"file_path": learned}})
-                effects["lint"] = [json.loads(so).get("decision")
-                                   for rc, so, _ in post if so.strip()]
+                with open(learned, encoding="utf-8") as fh:
+                    before = fh.read()
+                pre = run_registered(home, "PreToolUse", {
+                    "hook_event_name": "PreToolUse", "tool_name": "Edit", "cwd": home,
+                    "tool_input": {"file_path": learned, "old_string": before,
+                                   "new_string": before + "\n## запись без статуса\n"}})
+                effects["lint"] = [(json.loads(so).get("hookSpecificOutput") or {})
+                                   .get("permissionDecision")
+                                   for rc, so, _ in pre if so.strip()]
                 got[role] = effects
 
         def expect(role, ledgers):
             return {"ledger": sorted(ledgers), "report": [(role, "s-" + role)],
-                    "lint": ["block"]}
+                    "lint": ["deny"]}
         self.assertEqual(got, {
             "cckit-smith": expect("cckit-smith", ["LEARNED.md", "docs/findings/STATE.md"]),
             "design-hand": expect("design-hand", []),

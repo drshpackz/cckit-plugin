@@ -14,13 +14,13 @@
 которую проба и проверяет. Сценарий говорит, чем именно он ломается: не
 выполняет хуки, не доставляет контекст, выдумывает нонс, не пишет ничего.
 
-Расхождение с заданием (побеждает код): «PostToolUse блокирует — посмотри,
-легла ли запись на диск» не годится. `lint-learned` зовут ПОСЛЕ применения
-правки, отменить её он не может и не пытается: он возвращает
-`{"decision": "block"}`. Запись ложится на диск ВСЕГДА, и проба, смотрящая
-туда, объявляла бы провал при исправном хуке. Поэтому блокировка читается из
-его собственного вывода, а пара записей (со статусом и без) отличает сторожа
-от того, кто блокирует всё подряд.
+`lint-learned` висит на PreToolUse и отказывает записи ДО того, как она
+ляжет. Раньше он висел на PostToolUse, и его «block» запись не отменял —
+измерено 2026-09-24 на субагенте. Поэтому проба смотрит на ДИСК: запись без
+статуса не легла, правильная легла. Пара записей (со статусом и без)
+отличает сторожа от того, кто отказывает всему подряд; поддельный CLI честно
+отменяет запись на отказ PreToolUse и честно не отменяет на «block»
+PostToolUse — ровно как настоящий.
 
 Каждый тест утверждает число вызовов `claude`: проба, не запускавшая ничего,
 зелёная по той же причине, по которой зелёным бывает пустой набор.
@@ -78,7 +78,11 @@ with open(os.path.join(state, "calls.jsonl"), "a", encoding="utf-8") as fh:
     fh.write(json.dumps({"argv": argv, "cwd": os.getcwd()}, ensure_ascii=False) + "\n")
 
 sc = {"run_hooks": True, "deliver_context": True,
-      "writes": ["good", "bad"], "fake_nonce": None}
+      "writes": ["good", "bad"], "fake_nonce": None,
+      # Как ведёт себя НАСТОЯЩИЙ CLI (измерено 2026-09-24 живым `-p`,
+      # bypassPermissions): отказ PreToolUse отменяет запись; хуки дома
+      # срабатывают и на вызовы субагента, с agent_id в теле события.
+      "honour_deny": True, "hooks_on_subagents": True, "spawn": True}
 sp = os.path.join(state, "hooks_scenario.json")
 if os.path.exists(sp):
     with open(sp, encoding="utf-8") as fh:
@@ -132,6 +136,38 @@ if not sc["deliver_context"]:
 m = re.search(r"CCKIT-HOOK-[0-9A-F]+", context)
 said = sc["fake_nonce"] or (m.group(0) if m else "НЕТ")
 
+def denied(outs):
+    for rc, so in outs:
+        try:
+            d = json.loads(so or "{}")
+        except Exception:
+            continue
+        if (d.get("hookSpecificOutput") or {}).get("permissionDecision") == "deny":
+            return True
+    return False
+
+
+def edit(learned, chunk, agent=None):
+    """Одна правка Edit, как её делает CLI: PreToolUse → (отказ? стоп) →
+    запись → PostToolUse. old_string — весь текущий файл, как у настоящей
+    правки «дописать в конец»."""
+    with open(learned, encoding="utf-8") as fh:
+        before = fh.read()
+    body = {"tool_name": "Edit", "cwd": home,
+            "tool_input": {"file_path": learned, "old_string": before,
+                           "new_string": before + chunk, "replace_all": False}}
+    if agent:
+        body.update({"agent_id": "a-" + agent, "agent_type": agent})
+    hooked = agent is None or sc["hooks_on_subagents"]
+    outs = fire("PreToolUse", dict(body, hook_event_name="PreToolUse")) if hooked else []
+    if denied(outs) and sc["honour_deny"]:
+        return
+    with open(learned, "a", encoding="utf-8") as fh:
+        fh.write(chunk)
+    if hooked:
+        fire("PostToolUse", dict(body, hook_event_name="PostToolUse"))
+
+
 mk = re.search(r"HOOKPROBE-[0-9A-Z]+", prompt)
 if mk and "LEARNED.md" in prompt:
     learned = os.path.join(home, "LEARNED.md")
@@ -140,12 +176,10 @@ if mk and "LEARNED.md" in prompt:
             chunk = "\n## %s со статусом\n**Статус: наблюдение** (2026-09-24, проба).\n" % mk.group(0)
         else:
             chunk = "\n## %s без статуса\n" % mk.group(0)
-        # Правка применяется ДО хука: PostToolUse зовут после инструмента.
-        with open(learned, "a", encoding="utf-8") as fh:
-            fh.write(chunk)
-        fire("PostToolUse",
-             {"hook_event_name": "PostToolUse", "tool_name": "Edit", "cwd": home,
-              "tool_input": {"file_path": learned, "new_string": chunk}})
+        edit(learned, chunk)
+    ms = re.search(r"HOOKSUB-[0-9A-Z]+", prompt)
+    if ms and sc["spawn"]:
+        edit(learned, "\n## %s без статуса\n" % ms.group(0), agent="general-purpose")
 
 fire("Stop", {"hook_event_name": "Stop", "cwd": home, "session_id": "s1"})
 sys.stdout.write(json.dumps({"result": said, "session_id": "s1",
@@ -308,6 +342,33 @@ class TestProbeHooks(unittest.TestCase):
             state, note = ck.probe_hooks(home, project, card)
             self.assertEqual((state, len(sb.calls())), ("НЕ ДОКАЗАН", 1), note)
 
+    def test_a_refusal_that_does_not_stop_the_write_is_caught_on_the_disk(self):
+        # Ровно то, что измерено 2026-09-24 на старой регистрации: хук
+        # отказал, причина дошла, строка легла. По одному выводу хука это
+        # «заблокировано»; по диску — нет.
+        with Sandbox() as sb:
+            install_hook_aware_claude(sb)
+            scenario(sb, honour_deny=False)
+            home, card, project = make_home(sb, ("lint-learned",))
+            state, note = ck.probe_hooks(home, project, card)
+            self.assertEqual((state, len(sb.calls()), "легла на диск" in note),
+                             ("НЕ ДОШЁЛ", 1, True), note)
+
+    def test_a_home_left_on_post_tool_use_is_named_stale_and_spends_nothing(self):
+        with Sandbox() as sb:
+            install_hook_aware_claude(sb)
+            scenario(sb)
+            home, card, project = make_home(sb, ("lint-learned",))
+            p = os.path.join(home, ".claude", "settings.json")
+            with open(p, encoding="utf-8") as fh:
+                s = json.load(fh)
+            s["hooks"]["PostToolUse"] = s["hooks"].pop("PreToolUse")
+            with open(p, "w", encoding="utf-8") as fh:
+                json.dump(s, fh)
+            state, note = ck.probe_hooks(home, project, card)
+            self.assertEqual((state, len(sb.calls()), "PostToolUse" in note, "--reset" in note),
+                             ("НЕ ЗАРЕГИСТРИРОВАН", 0, True, True), note)
+
     def test_the_probe_does_not_launch_under_a_cap_that_kills_the_turn(self):
         """Потолок пробы закреплён числом, и это не придирка к константе.
 
@@ -400,6 +461,56 @@ class TestProbeHooks(unittest.TestCase):
             # reports.jsonl — работа самого хука, а не след пробы, и его
             # отсутствие в сравнении намеренное.
             self.assertEqual((state, after == before), ("ок", True), note)
+
+
+SPAWN = set(ck.BASE_CAPS) | {"spawn"}
+
+
+class TestProbeHooksOnSubagents(unittest.TestCase):
+    """Хуки дома срабатывают и на вызовы субагентов (измерено 2026-09-24).
+
+    Проба проверяет это той же уликой — диском: запись субагента без статуса
+    не легла. Не позвала модель субагента — это не поломка хука, и вердикт
+    от этого НЕ краснеет; краснеет он только от записи на диске."""
+
+    def _run(self, sb, granted=SPAWN, **sc):
+        install_hook_aware_claude(sb)
+        scenario(sb, **sc)
+        home, card, project = make_home(sb, ("lint-learned",))
+        state, note = ck.probe_hooks(home, project, card, granted)
+        argv = sb.calls()[0]["argv"] if sb.calls() else []
+        prompt = argv[argv.index("-p") + 1] if "-p" in argv else ""
+        return state, note, prompt, argv
+
+    def test_a_hook_that_fires_on_the_subagent_passes_and_says_so(self):
+        with Sandbox() as sb:
+            state, note, prompt, argv = self._run(sb)
+            self.assertEqual(
+                (state, "HOOKSUB-" in prompt,
+                 "субагент (general-purpose): сработал и отказал" in note,
+                 ck.HOOK_PROBE_BUDGET_SPAWN in argv),
+                ("ок", True, True, True), note)
+
+    def test_a_hook_that_misses_subagent_calls_is_red(self):
+        with Sandbox() as sb:
+            state, note, _, _ = self._run(sb, hooks_on_subagents=False)
+            self.assertEqual((state, "субагента хук не сработал" in note),
+                             ("НЕ СРАБОТАЛ", True), note)
+
+    def test_a_model_that_never_spawned_is_not_read_as_a_broken_hook(self):
+        with Sandbox() as sb:
+            state, note, _, _ = self._run(sb, spawn=False)
+            self.assertEqual((state, "субагент: не доказано" in note),
+                             ("ок", True), note)
+
+    def test_without_spawn_granted_no_subagent_is_asked_for(self):
+        # Без выдачи Agent запрещён: просьба мерила бы запрет, а не хук.
+        with Sandbox() as sb:
+            state, note, prompt, argv = self._run(sb, granted=set(ck.BASE_CAPS))
+            self.assertEqual(
+                (state, "HOOKSUB-" in prompt, "субагент" in note,
+                 ck.HOOK_PROBE_BUDGET in argv),
+                ("ок", False, False, True), note)
 
 
 class TestInstallCountsTheHookProbe(unittest.TestCase):
