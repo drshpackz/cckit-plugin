@@ -92,8 +92,10 @@ class TestShippedCardsSwitchHooksOn(unittest.TestCase):
         self.assertEqual(got, {
             "cckit-smith": ("claude-fable-5-1[1m]", "xhigh", "3.00"),
             "design-hand": ("claude-opus-5[1m]", "xhigh", "4.00"),
-            "design-scout": ("claude-opus-5", "xhigh", "3.00"),
-            "under-the-hood": ("claude-opus-5", "xhigh", "4.00"),
+            # 1.3, намеренно: окно 1M и порог сжатия 900k — старую руку тормозили
+            # два автосжатия посреди задачи на окне 200k (LEARNED.md, поправка).
+            "design-scout": ("claude-opus-5-5[1m]", "xhigh", "3.00"),
+            "under-the-hood": ("claude-opus-5-5[1m]", "xhigh", "4.00"),
         })
 
 
