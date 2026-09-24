@@ -1,0 +1,10 @@
+id: lint-learned
+kind: hook
+summary: запись в LEARNED.md без статуса не проходит
+provides: [keeps-learned]
+card_key: hooks
+card_value: lint-learned
+status: works
+proof: tests/test_hooks.py, проба хуков при установке
+origin: 1.2, b4c0e14
+files: [hooks/assistant/lint-learned, hooks/assistant/cckit_hook.py, hooks/run-hook.cmd, bin/cckit_learned.py]

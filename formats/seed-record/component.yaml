@@ -1,0 +1,11 @@
+id: seed-record
+kind: format
+summary: запись-зерно — одна находка, самодостаточная: вопрос, коммит, уверенность, источник, вердикт первым
+provides: [writes-findings]
+card_key: formats
+card_value: seed-record
+role_text: Находки для других агентов пиши записями-зернами по шаблону formats/seed-record/TEMPLATE.md плагина — шапка «вопрос · дата · коммит · уверенность · источник», вердикт первым разделом, открытые вопросы последним.
+status: wired-later
+proof: tests/test_seed_record.py; 23 из 25 живых досье проходят lint.py
+origin: design-scout, boomzi-assistant; f815c93
+files: [formats/seed-record]

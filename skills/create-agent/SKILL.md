@@ -21,20 +21,24 @@ in two.
 
 ## Assemble from the library
 
-Do not write an assistant from scratch when a proven part exists. Read `LIBRARY.md` at the
-plugin root and pick parts by the interview answers. Declare only parts marked **работает**
-there; a part that is not wired yet goes into `ROLE.md` as an instruction, not into the card.
+An assistant is a unit built from parts, not written from scratch: a **base role** (who it is,
+what it reads and writes, which tools) plus **parts** — hooks, record formats, practices,
+settings, later subagents and tools. The library is queried, not read: at a thousand parts
+no one can read the catalog.
 
-| the assistant… | take |
-|---|---|
-| reports to the main agent | `hooks: [report-done]` |
-| keeps `LEARNED.md` | `lint-learned` |
-| must not redo research that is already current | a ledger + `read-ledger` |
-| writes findings other agents will build on | the seed-record format, `formats/seed-record/TEMPLATE.md`: `formats: [seed-record]`; until the installer delivers it, name the template in `ROLE.md` |
-| has work that splits into independent parts | grant `spawn`, and say in `ROLE.md` which parts go to subagents — the model does not split on its own |
-| runs long tasks | a 1M-context model and `compact_at` near the window |
+```bash
+L="python3 ${CLAUDE_PLUGIN_ROOT}/bin/cckit_library.py"
+$L needs                          # what can be ordered, and which part gives it
+$L find <word>                    # search parts and roles
+$L order --role <base> --needs reports-to-main,writes-findings,splits-work --ledger <path>
+$L fetch --needs … --to <dir>     # only the ordered parts, at the pinned git version
+```
 
-Why each one helps, with numbers: the `speed-patterns` skill.
+Turn the interview answers into needs. `order --role` prints the whole `card.yaml`, the lines for
+`ROLE.md`, the grants for install, and what to fetch. A part marked «установщик доставит в 1.3»
+is not wired yet: keep its line out of the card and put its text in `ROLE.md`. Every role's
+permissions are shown in `LIBRARY.md` before install — computed by the installer's own constants.
+Why each part helps, with numbers: the `speed-patterns` skill.
 
 ## The card
 

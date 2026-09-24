@@ -1,0 +1,11 @@
+id: read-ledger
+kind: hook
+summary: SessionStart — ведомость проекта в контекст; актуальное не переисследуется
+provides: [reads-ledger]
+requires_input: [ledger]
+card_key: hooks
+card_value: read-ledger
+status: works
+proof: tests/test_shipped_hooks.py, проба хуков при установке
+origin: 1.2, b4c0e14
+files: [hooks/assistant/read-ledger, hooks/assistant/cckit_hook.py, hooks/run-hook.cmd]

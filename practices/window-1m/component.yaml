@@ -1,0 +1,8 @@
+id: window-1m
+kind: setting
+summary: окно 1M и порог сжатия у края окна — длинная задача не сжимается посередине
+provides: [long-tasks]
+card_lines: model: claude-opus-5-5[1m] | compact_at: 900000
+status: works
+proof: два автосжатия на 200k выбросили 337 тыс. токенов (LEARNED.md, поправка)
+origin: 1.3, 6a5eb25

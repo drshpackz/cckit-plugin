@@ -1,0 +1,8 @@
+id: speed-patterns
+kind: skill
+summary: измеренные рычаги скорости агентов и сэмплер
+provides: [speed-diagnosis]
+status: works
+proof: skills/speed-patterns/TESTING.md — RED, GREEN, вариация
+origin: 1.3, 3944abe
+files: [skills/speed-patterns]

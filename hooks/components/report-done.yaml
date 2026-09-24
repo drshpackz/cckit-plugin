@@ -1,0 +1,10 @@
+id: report-done
+kind: hook
+summary: Stop — строка в <дом>/reports.jsonl в конце каждого хода; основной агент узнаёт о конце без опроса
+provides: [reports-to-main]
+card_key: hooks
+card_value: report-done
+status: works
+proof: tests/test_hooks.py, проба хуков при установке
+origin: 1.2, b4c0e14
+files: [hooks/assistant/report-done, hooks/assistant/cckit_hook.py, hooks/run-hook.cmd]
