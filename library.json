@@ -1,0 +1,463 @@
+{
+ "components": [
+  {
+   "id": "seed-record",
+   "kind": "format",
+   "summary": "запись-зерно — одна находка, самодостаточная: вопрос, коммит, уверенность, источник, вердикт первым",
+   "provides": [
+    "writes-findings"
+   ],
+   "card_key": "formats",
+   "card_value": "seed-record",
+   "role_text": "Находки для других агентов пиши записями-зернами по шаблону formats/seed-record/TEMPLATE.md плагина — шапка «вопрос · дата · коммит · уверенность · источник», вердикт первым разделом, открытые вопросы последним.",
+   "status": "wired-later",
+   "proof": "tests/test_seed_record.py; 23 из 25 живых досье проходят lint.py",
+   "origin": "design-scout, boomzi-assistant; f815c93",
+   "files": [
+    "formats/seed-record"
+   ],
+   "requires": [],
+   "requires_input": [],
+   "grants": [],
+   "writes": [],
+   "hooks": [],
+   "manifest": "formats/seed-record/component.yaml",
+   "version": "c277b30"
+  },
+  {
+   "id": "lint-learned",
+   "kind": "hook",
+   "summary": "запись в LEARNED.md без статуса не проходит",
+   "provides": [
+    "keeps-learned"
+   ],
+   "card_key": "hooks",
+   "card_value": "lint-learned",
+   "status": "works",
+   "proof": "tests/test_hooks.py, проба хуков при установке",
+   "origin": "1.2, b4c0e14",
+   "files": [
+    "hooks/assistant/lint-learned",
+    "hooks/assistant/cckit_hook.py",
+    "hooks/run-hook.cmd",
+    "bin/cckit_learned.py"
+   ],
+   "requires": [],
+   "requires_input": [],
+   "grants": [],
+   "writes": [],
+   "hooks": [],
+   "manifest": "hooks/components/lint-learned.yaml",
+   "version": "c277b30"
+  },
+  {
+   "id": "read-ledger",
+   "kind": "hook",
+   "summary": "SessionStart — ведомость проекта в контекст; актуальное не переисследуется",
+   "provides": [
+    "reads-ledger"
+   ],
+   "requires_input": [
+    "ledger"
+   ],
+   "card_key": "hooks",
+   "card_value": "read-ledger",
+   "status": "works",
+   "proof": "tests/test_shipped_hooks.py, проба хуков при установке",
+   "origin": "1.2, b4c0e14",
+   "files": [
+    "hooks/assistant/read-ledger",
+    "hooks/assistant/cckit_hook.py",
+    "hooks/run-hook.cmd"
+   ],
+   "requires": [],
+   "grants": [],
+   "writes": [],
+   "hooks": [],
+   "manifest": "hooks/components/read-ledger.yaml",
+   "version": "c277b30"
+  },
+  {
+   "id": "report-done",
+   "kind": "hook",
+   "summary": "Stop — строка в <дом>/reports.jsonl в конце каждого хода; основной агент узнаёт о конце без опроса",
+   "provides": [
+    "reports-to-main"
+   ],
+   "card_key": "hooks",
+   "card_value": "report-done",
+   "status": "works",
+   "proof": "tests/test_hooks.py, проба хуков при установке",
+   "origin": "1.2, b4c0e14",
+   "files": [
+    "hooks/assistant/report-done",
+    "hooks/assistant/cckit_hook.py",
+    "hooks/run-hook.cmd"
+   ],
+   "requires": [],
+   "requires_input": [],
+   "grants": [],
+   "writes": [],
+   "hooks": [],
+   "manifest": "hooks/components/report-done.yaml",
+   "version": "c277b30"
+  },
+  {
+   "id": "fan-out",
+   "kind": "practice",
+   "summary": "независимые части работы — субагентам, сразу; модель сама не делит, пока ей не сказано",
+   "provides": [
+    "splits-work"
+   ],
+   "grants": [
+    "spawn"
+   ],
+   "role_text": "Независимые части работы (области, файлы, подсистемы) отдавай субагентам параллельно, себе оставь сборку и решения.",
+   "status": "works",
+   "proof": "0 субагентов в 36 замерах без этой строки; с ней — делит и на новых задачах (docs/findings/agent-speed.md)",
+   "origin": "1.3, 6a5eb25",
+   "requires": [],
+   "requires_input": [],
+   "files": [],
+   "writes": [],
+   "hooks": [],
+   "manifest": "practices/fan-out/component.yaml",
+   "version": "c277b30"
+  },
+  {
+   "id": "write-early",
+   "kind": "practice",
+   "summary": "результат — в файл с первых минут, по частям; план в голове пропадает при сжатии",
+   "provides": [
+    "long-tasks"
+   ],
+   "role_text": "Результат пиши в файл с первых минут и дописывай по частям — план, который живёт только в голове, пропадает при сжатии контекста.",
+   "status": "works",
+   "proof": "старая рука потеряла 7.5-минутный план при автосжатии (LEARNED.md, поправка)",
+   "origin": "1.3, 6a5eb25",
+   "requires": [],
+   "requires_input": [],
+   "grants": [],
+   "files": [],
+   "writes": [],
+   "hooks": [],
+   "manifest": "practices/write-early/component.yaml",
+   "version": "c277b30"
+  },
+  {
+   "id": "window-1m",
+   "kind": "setting",
+   "summary": "окно 1M и порог сжатия у края окна — длинная задача не сжимается посередине",
+   "provides": [
+    "long-tasks"
+   ],
+   "card_lines": [
+    "model: claude-opus-5-5[1m]",
+    "compact_at: 900000"
+   ],
+   "status": "works",
+   "proof": "два автосжатия на 200k выбросили 337 тыс. токенов (LEARNED.md, поправка)",
+   "origin": "1.3, 6a5eb25",
+   "requires": [],
+   "requires_input": [],
+   "grants": [],
+   "files": [],
+   "writes": [],
+   "hooks": [],
+   "manifest": "practices/window-1m/component.yaml",
+   "version": "c277b30"
+  },
+  {
+   "id": "speed-patterns",
+   "kind": "skill",
+   "summary": "измеренные рычаги скорости агентов и сэмплер",
+   "provides": [
+    "speed-diagnosis"
+   ],
+   "status": "works",
+   "proof": "skills/speed-patterns/TESTING.md — RED, GREEN, вариация",
+   "origin": "1.3, 3944abe",
+   "files": [
+    "skills/speed-patterns"
+   ],
+   "requires": [],
+   "requires_input": [],
+   "grants": [],
+   "writes": [],
+   "hooks": [],
+   "manifest": "skills/speed-patterns/component.yaml",
+   "version": "c277b30"
+  }
+ ],
+ "roles": [
+  {
+   "id": "cckit-smith",
+   "kind": "role",
+   "summary": "Улучшает сам CCKit: ищет разрывы между обещанным и существующим, пишет находки со статусом и предлагает правки с доказательством.",
+   "access": "write-scoped",
+   "reads": "весь проект и свой дом",
+   "writes": [
+    "docs/findings/**",
+    "docs/superpowers/specs/**"
+   ],
+   "tools_allowed": [
+    "Edit",
+    "Glob",
+    "Grep",
+    "NotebookEdit",
+    "Read",
+    "Skill",
+    "TodoWrite",
+    "ToolSearch",
+    "Write"
+   ],
+   "tools_denied": [
+    "Agent",
+    "Artifact",
+    "ArtifactComments",
+    "ArtifactData",
+    "Bash",
+    "CronCreate",
+    "CronDelete",
+    "CronList",
+    "DesignSync",
+    "EnterWorktree",
+    "ExitWorktree",
+    "ListAgents",
+    "Monitor",
+    "PushNotification",
+    "RemoteTrigger",
+    "ReportFindings",
+    "ScheduleWakeup",
+    "SendMessage",
+    "Task",
+    "TaskStop",
+    "WebFetch",
+    "WebSearch",
+    "Workflow"
+   ],
+   "grants_on_request": [
+    "shell",
+    "peers",
+    "publish",
+    "schedule",
+    "mcp",
+    "shell-subagents",
+    "spawn",
+    "web",
+    "worktree",
+    "design"
+   ],
+   "hooks": [
+    "report-done",
+    "lint-learned",
+    "read-ledger"
+   ],
+   "model": "claude-fable-5-1[1m]",
+   "effort": "xhigh",
+   "compact_at": "900000",
+   "version": "6a5eb25"
+  },
+  {
+   "id": "design-hand",
+   "kind": "role",
+   "summary": "Рука на холсте: меняет артборды BOOMZI по словам владельца и публикует их.",
+   "access": "write-scoped",
+   "reads": "весь проект и свой дом",
+   "writes": [
+    "docs/design/**"
+   ],
+   "tools_allowed": [
+    "Edit",
+    "Glob",
+    "Grep",
+    "NotebookEdit",
+    "Read",
+    "Skill",
+    "TodoWrite",
+    "ToolSearch",
+    "Write"
+   ],
+   "tools_denied": [
+    "Agent",
+    "Artifact",
+    "ArtifactComments",
+    "ArtifactData",
+    "Bash",
+    "CronCreate",
+    "CronDelete",
+    "CronList",
+    "DesignSync",
+    "EnterWorktree",
+    "ExitWorktree",
+    "ListAgents",
+    "Monitor",
+    "PushNotification",
+    "RemoteTrigger",
+    "ReportFindings",
+    "ScheduleWakeup",
+    "SendMessage",
+    "Task",
+    "TaskStop",
+    "WebFetch",
+    "WebSearch",
+    "Workflow"
+   ],
+   "grants_on_request": [
+    "shell",
+    "peers",
+    "publish",
+    "schedule",
+    "mcp",
+    "shell-subagents",
+    "spawn",
+    "web",
+    "worktree",
+    "design"
+   ],
+   "hooks": [
+    "report-done",
+    "lint-learned"
+   ],
+   "model": "claude-opus-5[1m]",
+   "effort": "xhigh",
+   "compact_at": "900000",
+   "version": "6a5eb25"
+  },
+  {
+   "id": "design-scout",
+   "kind": "role",
+   "summary": "Кладёт дизайн на внутренности кодовой базы и пишет справку со ссылками file:line.",
+   "access": "write-scoped",
+   "reads": "весь проект и свой дом",
+   "writes": [
+    "docs/vscode-internals/**"
+   ],
+   "tools_allowed": [
+    "Edit",
+    "Glob",
+    "Grep",
+    "NotebookEdit",
+    "Read",
+    "Skill",
+    "TodoWrite",
+    "ToolSearch",
+    "Write"
+   ],
+   "tools_denied": [
+    "Agent",
+    "Artifact",
+    "ArtifactComments",
+    "ArtifactData",
+    "Bash",
+    "CronCreate",
+    "CronDelete",
+    "CronList",
+    "DesignSync",
+    "EnterWorktree",
+    "ExitWorktree",
+    "ListAgents",
+    "Monitor",
+    "PushNotification",
+    "RemoteTrigger",
+    "ReportFindings",
+    "ScheduleWakeup",
+    "SendMessage",
+    "Task",
+    "TaskStop",
+    "WebFetch",
+    "WebSearch",
+    "Workflow"
+   ],
+   "grants_on_request": [
+    "shell",
+    "peers",
+    "publish",
+    "schedule",
+    "mcp",
+    "shell-subagents",
+    "spawn",
+    "web",
+    "worktree",
+    "design"
+   ],
+   "hooks": [
+    "report-done",
+    "lint-learned",
+    "read-ledger"
+   ],
+   "model": "claude-opus-5-5[1m]",
+   "effort": "xhigh",
+   "compact_at": "900000",
+   "version": "6a5eb25"
+  },
+  {
+   "id": "under-the-hood",
+   "kind": "role",
+   "summary": "Строит в коде то, что решено на холсте: темы, вклады, контрибуции — со ссылками path:line.",
+   "access": "write-scoped",
+   "reads": "весь проект и свой дом",
+   "writes": [
+    "extensions/theme-boomzi/**",
+    "docs/vscode-internals/**"
+   ],
+   "tools_allowed": [
+    "Edit",
+    "Glob",
+    "Grep",
+    "NotebookEdit",
+    "Read",
+    "Skill",
+    "TodoWrite",
+    "ToolSearch",
+    "Write"
+   ],
+   "tools_denied": [
+    "Agent",
+    "Artifact",
+    "ArtifactComments",
+    "ArtifactData",
+    "Bash",
+    "CronCreate",
+    "CronDelete",
+    "CronList",
+    "DesignSync",
+    "EnterWorktree",
+    "ExitWorktree",
+    "ListAgents",
+    "Monitor",
+    "PushNotification",
+    "RemoteTrigger",
+    "ReportFindings",
+    "ScheduleWakeup",
+    "SendMessage",
+    "Task",
+    "TaskStop",
+    "WebFetch",
+    "WebSearch",
+    "Workflow"
+   ],
+   "grants_on_request": [
+    "shell",
+    "peers",
+    "publish",
+    "schedule",
+    "mcp",
+    "shell-subagents",
+    "spawn",
+    "web",
+    "worktree",
+    "design"
+   ],
+   "hooks": [
+    "report-done",
+    "lint-learned",
+    "read-ledger"
+   ],
+   "model": "claude-opus-5-5[1m]",
+   "effort": "xhigh",
+   "compact_at": "900000",
+   "version": "6a5eb25"
+  }
+ ]
+}

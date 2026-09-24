@@ -1,17 +1,28 @@
-# Библиотека: из чего собираются ассистенты
+# Библиотека компонентов
 
-Приём не теряется, когда держится тремя опорами: **файл** в библиотеке, **строка** в карточке
-роли (установщик привозит его в дом), **проверка**, которая краснеет, если приём сломан.
-Журналы (`LEARNED.md`, `docs/findings/`) — откуда приёмы родились; живут они здесь.
+**Генерируется** из манифестов (`python3 bin/cckit_library.py index`) — руками не править.
+Приём живёт тремя опорами: файл компонента, строка в карточке роли, проверка (`proof`
+в манифесте). Заказ: `python3 bin/cckit_library.py order --needs …`.
 
-| компонент | где | как роль его получает | чем держится | статус |
-|---|---|---|---|---|
-| роли | `assistants/<роль>/` | установка | пробы мозга и ограды | работает |
-| хуки: `report-done`, `lint-learned`, `read-ledger` | `hooks/assistant/` | `hooks:` | проба срабатывания при установке | работает (1.2) |
-| запись-зерно | `formats/seed-record/` | `formats:` — будет в 1.3 | `lint.py` + `tests/test_seed_record.py`; 23 из 25 живых досье проходят | шаблон и линтер есть, подключение — 1.3 |
-| скилл `speed-patterns` | `skills/speed-patterns/` | с плагином | `TESTING.md`: RED, GREEN, вариация | работает (1.3) |
-| именованные субагенты | `subagents/` | `subagents:` | проба «виден и запускается» | нет — 1.6 |
-| инструменты | `tools/` | `tools:` | самопроверка инструмента | нет — 1.6 |
+| id | вид | даёт | статус | версия | что это |
+|---|---|---|---|---|---|
+| seed-record | format | writes-findings | wired-later | c277b30 | запись-зерно — одна находка, самодостаточная: вопрос, коммит, уверенность, источник, вердикт первым |
+| lint-learned | hook | keeps-learned | works | c277b30 | запись в LEARNED.md без статуса не проходит |
+| read-ledger | hook | reads-ledger | works | c277b30 | SessionStart — ведомость проекта в контекст; актуальное не переисследуется |
+| report-done | hook | reports-to-main | works | c277b30 | Stop — строка в <дом>/reports.jsonl в конце каждого хода; основной агент узнаёт о конце без опроса |
+| fan-out | practice | splits-work | works | c277b30 | независимые части работы — субагентам, сразу; модель сама не делит, пока ей не сказано |
+| write-early | practice | long-tasks | works | c277b30 | результат — в файл с первых минут, по частям; план в голове пропадает при сжатии |
+| window-1m | setting | long-tasks | works | c277b30 | окно 1M и порог сжатия у края окна — длинная задача не сжимается посередине |
+| speed-patterns | skill | speed-diagnosis | works | c277b30 | измеренные рычаги скорости агентов и сэмплер |
 
-Новый компонент приходит сюда с шапкой записи-зерна (`formats/seed-record/TEMPLATE.md`):
-на что отвечает, откуда родился, чем доказан, насколько ему верить.
+## Роли — что каждая может, до установки
+
+Права вычислены константами установщика: описание не может разойтись с тем, что роль получит.
+Читают все роли весь проект и свой дом. Опасные группы — только по явной выдаче при установке.
+
+| роль | для чего | пишет | разрешено | запрещено | хуки | модель |
+|---|---|---|---|---|---|---|
+| cckit-smith | Улучшает сам CCKit: ищет разрывы между обещанным и существующим, пишет находки со статусом и предлагает правки с доказательством. | docs/findings/**, docs/superpowers/specs/** | Edit, Glob, Grep, NotebookEdit, Read, Skill, TodoWrite, ToolSearch, Write | Agent, Artifact, ArtifactComments, ArtifactData, Bash, CronCreate, CronDelete, CronList, DesignSync, EnterWorktree, ExitWorktree, ListAgents, Monitor, PushNotification, RemoteTrigger, ReportFindings, ScheduleWakeup, SendMessage, Task, TaskStop, WebFetch, WebSearch, Workflow | report-done, lint-learned, read-ledger | claude-fable-5-1[1m] |
+| design-hand | Рука на холсте: меняет артборды BOOMZI по словам владельца и публикует их. | docs/design/** | Edit, Glob, Grep, NotebookEdit, Read, Skill, TodoWrite, ToolSearch, Write | Agent, Artifact, ArtifactComments, ArtifactData, Bash, CronCreate, CronDelete, CronList, DesignSync, EnterWorktree, ExitWorktree, ListAgents, Monitor, PushNotification, RemoteTrigger, ReportFindings, ScheduleWakeup, SendMessage, Task, TaskStop, WebFetch, WebSearch, Workflow | report-done, lint-learned | claude-opus-5[1m] |
+| design-scout | Кладёт дизайн на внутренности кодовой базы и пишет справку со ссылками file:line. | docs/vscode-internals/** | Edit, Glob, Grep, NotebookEdit, Read, Skill, TodoWrite, ToolSearch, Write | Agent, Artifact, ArtifactComments, ArtifactData, Bash, CronCreate, CronDelete, CronList, DesignSync, EnterWorktree, ExitWorktree, ListAgents, Monitor, PushNotification, RemoteTrigger, ReportFindings, ScheduleWakeup, SendMessage, Task, TaskStop, WebFetch, WebSearch, Workflow | report-done, lint-learned, read-ledger | claude-opus-5-5[1m] |
+| under-the-hood | Строит в коде то, что решено на холсте: темы, вклады, контрибуции — со ссылками path:line. | extensions/theme-boomzi/**, docs/vscode-internals/** | Edit, Glob, Grep, NotebookEdit, Read, Skill, TodoWrite, ToolSearch, Write | Agent, Artifact, ArtifactComments, ArtifactData, Bash, CronCreate, CronDelete, CronList, DesignSync, EnterWorktree, ExitWorktree, ListAgents, Monitor, PushNotification, RemoteTrigger, ReportFindings, ScheduleWakeup, SendMessage, Task, TaskStop, WebFetch, WebSearch, Workflow | report-done, lint-learned, read-ledger | claude-opus-5-5[1m] |
