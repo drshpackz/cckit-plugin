@@ -6,3 +6,5 @@ model: claude-fable-5-1[1m]
 effort: xhigh
 budget_usd: 3.00
 compact_at: 900000
+hooks: [report-done, lint-learned, read-ledger]
+ledger: [LEARNED.md, docs/findings/STATE.md]

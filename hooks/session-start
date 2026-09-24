@@ -1,10 +1,20 @@
 #!/usr/bin/env bash
 # SessionStart: put the dispatcher skill in front of the agent, so it knows an
 # assistant is an option before it starts doing the work by hand.
-set -euo pipefail
+#
+# Two outcomes, and they must never look alike:
+#   * delivered — `additional_context` carries the skill;
+#   * could not — `systemMessage` names the reason, and there is NO
+#     `additional_context` at all.
+# Here stood `content=$(cat … || exit 0)`. That `exit 0` left the SUBSHELL, not
+# the script: a missing SKILL.md produced an empty body, valid JSON and code 0,
+# and the gate that checks "valid JSON" stayed green. The exit code stays 0 on
+# purpose — a broken hint must not break the session; the difference is the
+# shape of what is printed, which is what the gate and the tests read.
+set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-content=$(cat "${PLUGIN_ROOT}/skills/using-assistants/SKILL.md" 2>/dev/null || exit 0)
+SKILL="${PLUGIN_ROOT}/skills/using-assistants/SKILL.md"
 
 esc() {
     local s="$1"
@@ -12,6 +22,21 @@ esc() {
     s="${s//$'\n'/\\n}"; s="${s//$'\r'/\\r}"; s="${s//$'\t'/\\t}"
     printf '%s' "$s"
 }
+
+fail() {
+    printf '{"systemMessage":"%s"}\n' "$(esc "cckit session-start: $1")"
+    exit 0
+}
+
+if ! content="$(cat "$SKILL" 2>&1)"; then
+    fail "не прочитать ${SKILL} — диспетчер ассистентов не доставлен (${content})"
+fi
+# Файл на месте, а сказать нечего — это тоже «не смог», а не «нечего сказать»:
+# пустой диспетчер агенту бесполезен так же, как отсутствующий.
+if [ -z "${content//[[:space:]]/}" ]; then
+    fail "${SKILL} пуст — диспетчер ассистентов не доставлен"
+fi
+
 ctx="You have CCKit Assistants.\n\n$(esc "$content")"
 # Cursor expects additional_context; Claude Code reads hookSpecificOutput.
 printf '{"additional_context":"%s","hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"%s"}}\n' "$ctx" "$ctx"

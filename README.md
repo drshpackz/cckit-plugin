@@ -32,7 +32,7 @@ in the code:
 
 So the installer **writes into a forbidden place and looks at the disk**, then
 asks the model to execute something and looks again. Separately it compares the
-delivered system prompt to the role body. Until both probes pass, nothing is
+delivered system prompt to the role body. Until every probe passes, nothing is
 reported as installed. A role you downloaded gets the same treatment as your
 own.
 
@@ -85,10 +85,38 @@ second instance, not a polluted first one.
 
 Every record in `LEARNED.md` carries how well it is known — `измерено`,
 `наблюдение`, `гипотеза`, `слово владельца` — and `bin/cckit_learned.py`
-checks it, in `./dev.sh check` and by hand. It is not yet wired to the
-assistant itself: a record written without a status is caught at the gate, not
-as it is written. That hook is 1.2. Without
-that, one session's guess reads a month later exactly like a measured fact.
+checks it, in `./dev.sh check` and by hand — and, in every home whose card
+declares `lint-learned`, as the record is written (see below). Without that,
+one session's guess reads a month later exactly like a measured fact.
+
+## The home acts by itself: hooks
+
+A card switches hooks on by name; the implementations ship with the plugin and
+are copied into the home, so the home outlives the plugin being updated or
+removed.
+
+```yaml
+hooks: [report-done, lint-learned, read-ledger]
+ledger: docs/vscode-internals/STATE.md     # what read-ledger delivers
+```
+
+- `report-done` (Stop) — one line per finished turn in `<home>/reports.jsonl`;
+- `lint-learned` (PostToolUse on Write|Edit) — a `LEARNED.md` record without a
+  status is blocked with the reason;
+- `read-ledger` (SessionStart) — the project's ledger goes into the session's
+  context, so a section already marked current is not researched again.
+
+Every shipped role declares `report-done` and `lint-learned`. Only the roles
+whose brief already says "read this first" declare `read-ledger`:
+`design-scout` and `under-the-hood` (`docs/vscode-internals/STATE.md`),
+`cckit-smith` (`LEARNED.md`, `docs/findings/STATE.md`). `design-hand` has no
+ledger — a file pushed into every session that nobody needs is paid for anyway.
+
+Declared is not the same as working, so `install` runs a third probe: it
+starts the assistant once and checks each hook's **effect** — the nonce in the
+context, the linter's verdict, the new line in the journal. A hook that is
+registered and never fires reports `НЕ СРАБОТАЛ`, and the install is not
+reported as verified.
 
 ## Capabilities are granted, not baked in
 
@@ -126,10 +154,11 @@ typed while looking at theirs. Installing into a Django tree denies `app/`,
 - The deny list is a snapshot taken at install. A top-level directory added to
   the project afterwards is denied by nothing. Re-run `install --force` (it
   does not touch memory).
-- The library holds two roles — `design-scout` (maps a codebase for a build)
-  and `cckit-smith` (finds the gaps in CCKit itself). `$CK roles` lists them.
-  Two is not a library; `find-agent` will honestly tell you when there is
-  nothing fitting to install.
+- The plugin ships four roles — `design-scout` (maps a codebase for a build),
+  `under-the-hood` (builds what the design decided), `design-hand` (edits the
+  design canvas) and `cckit-smith` (finds the gaps in CCKit itself). `$CK roles`
+  lists them. Four is not a library; `find-agent` will honestly tell you when
+  there is nothing fitting to install.
 
 ## Without Python
 

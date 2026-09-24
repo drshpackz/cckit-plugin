@@ -82,6 +82,41 @@ cmd_eval() {
     return $rc
 }
 
+# Синтаксис КАЖДОГО файла под hooks/, найденного на диске, а не списка имён.
+# Список уже подвёл: 1.2 привезла три хука в hooks/assistant/, а ворота
+# продолжали смотреть на два файла, названных руками, — новый хук с ошибкой
+# синтаксиса проходил их зелёным. Файл, который ворота не умеют проверить,
+# — БЕДА, а не пропуск: молча пропущенный язык — та же дыра.
+cmd_hooks() {
+    say "== хуки =="
+    local n=0 f rel first
+    while IFS= read -r -d '' f; do
+        rel="${f#$ROOT/}"
+        n=$((n+1))
+        case "$f" in
+            *.json)
+                python3 -c "import json,sys;json.load(open(sys.argv[1],encoding='utf-8'))" "$f" 2>/dev/null \
+                    && good "$rel (JSON)" || bad "$rel — не разбирается как JSON" ;;
+            *.py)
+                python3 -c "import ast,sys;ast.parse(open(sys.argv[1],encoding='utf-8').read())" "$f" 2>/dev/null \
+                    && good "$rel (python)" || bad "$rel — синтаксис python" ;;
+            *.cmd)
+                # Полиглот: cmd.exe читает верхнюю половину, bash — нижнюю.
+                bash -n "$f" 2>/dev/null && good "$rel (полиглот, как bash)" || bad "$rel — bash -n" ;;
+            *)
+                first="$(head -n1 "$f" 2>/dev/null)"
+                case "$first" in
+                    '#!'*bash*|'#!'*/sh|'#!'*' sh')
+                        bash -n "$f" 2>/dev/null && good "$rel (bash)" || bad "$rel — bash -n" ;;
+                    *)
+                        bad "$rel — ворота не знают, чем это проверить (первая строка: ${first:0:40})" ;;
+                esac ;;
+        esac
+    done < <(find "$ROOT/hooks" -type f ! -name '*.pyc' ! -path '*/__pycache__/*' -print0 | sort -z)
+    [ "$n" -gt 0 ] && say "  проверено файлов: $n" \
+        || bad "в hooks/ не нашлось ни одного файла — проверять было нечего"
+}
+
 cmd_check() {
     say "== проверка =="
     cmd_test
@@ -129,12 +164,14 @@ sys.exit(bad)
 PY
     [ $? -ne 0 ] && ok=1
 
-    bash -n "$ROOT/hooks/session-start" && good "hooks/session-start" || bad "hooks/session-start"
-    bash -n "$ROOT/hooks/run-hook.cmd" && good "hooks/run-hook.cmd (валиден и как bash)" || bad "run-hook.cmd"
+    cmd_hooks
 
+    # «Валидный JSON» — мало: хук, не нашедший SKILL.md, тоже отдавал валидный
+    # JSON с кодом 0. Спрашивается, ДОШЁЛ ли скилл: в контексте его тело, и
+    # нет systemMessage, которым хук говорит «не смог».
     CLAUDE_PLUGIN_ROOT="$ROOT" bash "$ROOT/hooks/session-start" \
-        | python3 -c "import json,sys;d=json.load(sys.stdin);assert d['additional_context']" 2>/dev/null \
-        && good "хук отдаёт валидный JSON" || bad "хук не отдал валидный JSON"
+        | python3 -c "import json,sys;d=json.load(sys.stdin);assert 'systemMessage' not in d, d['systemMessage'];assert 'name: using-assistants' in d['additional_context']" 2>/dev/null \
+        && good "session-start доставляет скилл-диспетчер" || bad "session-start не доставил скилл-диспетчер"
 
     # Ни одного домашнего пути в том, что ПОСТАВЛЯЕТСЯ — это и делает плагин
     # непереносимым. Проверяется отслеживаемое, а не всё на диске: артефакты
@@ -228,9 +265,10 @@ cmd_all() {
 case "${1:-check}" in
     check)     cmd_check ;;
     test)      cmd_test ;;
+    hooks)     cmd_hooks; exit $ok ;;
     eval)      shift; cmd_eval ${1:+"$@"} ;;
     publish)   cmd_publish "${2:-}" ;;
     reinstall) cmd_reinstall "${2:-}" ;;
     all)       cmd_all "${2:-cckit: правки}" ;;
-    *) say "dev.sh check | test | eval [флаги] | publish [сообщение] | reinstall [источник] | all [сообщение]" ;;
+    *) say "dev.sh check | test | hooks | eval [флаги] | publish [сообщение] | reinstall [источник] | all [сообщение]" ;;
 esac

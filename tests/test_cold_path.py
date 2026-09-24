@@ -116,6 +116,15 @@ class TestColdPath(unittest.TestCase):
                                 "design-scout@" + os.path.basename(sb.project))
             self.assertTrue(os.path.isfile(os.path.join(home, "launch.json")),
                             "дом не собран:\n" + out)
+            # Хуки у чужого человека включаются карточкой из поставки, а не
+            # руками: дом обязан прийти с ними, и проба обязана их ПРОБОВАТЬ.
+            # «не объявлены» здесь — это 1.2 без включения: механизм есть,
+            # дом не действует сам.
+            self.assertIn("проба хуков", out)
+            self.assertNotIn("не объявлены", out,
+                             "поставляемая роль приехала без хуков:\n" + out)
+            self.assertEqual(ck.installed_hooks(home),
+                             ["lint-learned", "read-ledger", "report-done"], out)
 
             rc, out = call(["list", "--all"])
             self.assertEqual(rc, 0, out)

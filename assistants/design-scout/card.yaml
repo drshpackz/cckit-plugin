@@ -6,3 +6,5 @@ model: claude-opus-5
 effort: xhigh
 budget_usd: 3.00
 compact_at: 200000
+hooks: [report-done, lint-learned, read-ledger]
+ledger: docs/vscode-internals/STATE.md

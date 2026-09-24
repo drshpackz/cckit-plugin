@@ -31,6 +31,8 @@ writes: ["docs/notes/**"]   # omit for read-only
 model: claude-opus-5
 effort: xhigh               # low|medium|high|xhigh|max
 budget_usd: 3.00            # hard ceiling per run
+hooks: [report-done, lint-learned]   # + read-ledger if it has a ledger
+ledger: docs/notes/STATE.md # what read-ledger puts in every session
 ```
 
 `~/.cckit/library/<role>/ROLE.md` is the **system prompt** — it replaces Claude
@@ -45,9 +47,9 @@ python3 "${CLAUDE_PLUGIN_ROOT}/bin/cckit_assistant.py"
 # короче, если установлен CCKit CLI: cckit assistant install <role> --project <abs path>
 ```
 
-It refuses to report success until two probes pass: it writes into a forbidden
-place and checks the **disk**, and it compares the delivered system prompt to
-the role body **byte for byte**. Both failures it guards against happen in
+It refuses to report success until the probes pass: it writes into a forbidden
+place and checks the **disk**, it compares the delivered system prompt to
+the role body **byte for byte**, and it checks each declared hook's **effect**. Both failures it guards against happen in
 silence — a mis-scoped rule matches nothing, and a card missing `name:` is
 ignored while everything still looks normal.
 
