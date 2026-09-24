@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# SessionStart: отдать ведомость проекта как additional_context.
+#
+# Обёртка тонкая нарочно: весь разбор — в cckit_hook.py рядом. Те же несколько
+# строк на bash были бы `|| exit 0` в подоболочке, где неудача неотличима от
+# успеха (см. hooks/session-start и шапку cckit_hook.py).
+#
+# Имя файла БЕЗ «.sh»: автоопределение Claude Code на windows дописывает bash
+# ко всему, где встретилось «.sh». Зовётся через полиглот run-hook.cmd.
+#
+# `set -e` здесь нет намеренно: хук не вправе уронить ход ассистента.
+set -uo pipefail
+DIR="$(cd "$(dirname "$0")" && pwd)"
+for py in python3 python; do
+	if command -v "$py" >/dev/null 2>&1; then
+		exec "$py" "$DIR/cckit_hook.py" read-ledger
+	fi
+done
+# Питона нет — сказать об этом, а не промолчать кодом 0.
+printf '%s\n' '{"systemMessage":"хук read-ledger: на этой машине нет python3, хук не отработал"}'
+exit 0

@@ -18,6 +18,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import sys
 import uuid
 from datetime import datetime, timezone
@@ -233,6 +234,207 @@ def project_denies(project, writes):
     return out
 
 
+# ── Хуки: то единственное, чем дом действует сам ──────────────────────────
+#
+# До этого дом нёс промпт, права, память и журнал — и не действовал ничем.
+# Вся дисциплина держалась на том, что задание не забыли вписать: разведчик
+# уважил ведомость только потому, что ему это велели в брифе, а линтер
+# LEARNED.md звали руками. Хук переводит правило из «не забыть сказать» в
+# «происходит само».
+#
+# Карточка называет хуки ПО ИМЕНИ; реализации ПОСТАВЛЯЮТСЯ с плагином
+# (hooks/assistant/<имя>) и копируются в дом. Имя, которого нет в этой
+# таблице, роняет установку: хук, которого нет, снаружи неотличим от хука,
+# который не сработал, и молчание тут стоит дороже отказа.
+HOOK_EVENTS = {
+    "report-done": {
+        "event": "Stop",
+        "matcher": None,
+        "status": "Докладываю об окончании хода",
+    },
+    "lint-learned": {
+        "event": "PostToolUse",
+        "matcher": "Write|Edit",
+        "status": "Проверяю LEARNED.md",
+    },
+    "read-ledger": {
+        "event": "SessionStart",
+        "matcher": "startup|clear|compact",
+        "status": "Читаю ведомость проекта",
+    },
+}
+HOOK_TIMEOUT = 30
+
+# Ведомость по умолчанию — та, ради которой read-ledger и заведён. Карточка
+# может назвать свою через `ledger:`.
+DEFAULT_LEDGERS = ("docs/vscode-internals/STATE.md",)
+
+# Питон линтера едет В ДОМ копией, а не зовётся из каталога плагина. Дом
+# переживает обновление, переезд и удаление плагина, а хук, указывающий на
+# исчезнувший файл, отказывал бы молча — ровно то, против чего он заведён.
+# Копия не расходится с оригиналом: её переписывает каждый install и reset,
+# как launch.json и settings.json.
+HOOK_SHIPPED = ("cckit_hook.py",)
+
+
+def hooks_dir(home):
+    return os.path.join(home, ".claude", "hooks")
+
+
+def _posix(p):
+    """Путь для строки команды. На windows os.path.join даёт обратные косые,
+    а команда хука исполняется оболочкой, где обратная косая — экранирование:
+    путь молча распадается, и хук не находится. Та же беда, что у abs_rule."""
+    return p.replace("\\", "/")
+
+
+def card_hooks(card):
+    """Объявленные в карточке хуки, по порядку и без повторов.
+
+    Принимаются ДВА написания, и это не мягкость: имя РЕАЛИЗАЦИИ, которую
+    везёт плагин (`report-done`), и имя СОБЫТИЯ (`stop`, `SessionStart`) для
+    дома, кладущего свой скрипт руками. Первое установщик ставит сам; второе
+    он только регистрирует, а есть ли файл — отвечает проба.
+
+    Имя, которое не разбирается ни туда, ни сюда, роняет установку. Это тот же
+    довод, что и у пробы: хук, которого нет, снаружи неотличим от хука, который
+    не сработал, и молчание тут стоит дороже отказа.
+    """
+    names = card.get("hooks") or []
+    if isinstance(names, str):
+        names = [x.strip() for x in names.split(",") if x.strip()]
+    unknown = [n for n in names if n not in HOOK_EVENTS and not hook_event(n)]
+    if unknown:
+        die("карточка: нет таких хуков: %s\nреализации плагина: %s\nсобытия: %s"
+            % (", ".join(unknown), ", ".join(sorted(HOOK_EVENTS)),
+               ", ".join(sorted(HOOK_EVENT_ALIASES))))
+    out = []
+    for n in names:
+        if n not in out:
+            out.append(n)
+    return out
+
+
+def card_ledgers(card):
+    v = card.get("ledger")
+    if isinstance(v, str) and v.strip():
+        return [v.strip()]
+    if isinstance(v, list):
+        return [x for x in v if x]
+    return list(DEFAULT_LEDGERS)
+
+
+def compile_hooks(home, card):
+    """Раздел `hooks` для settings.json — производная от карточки, как и права.
+
+    Команда идёт через тот же полиглот, что и хук самого плагина: имя файла
+    без «.sh», потому что автоопределение на windows дописывает bash ко всему,
+    где встретилось «.sh».
+    """
+    spec = {}
+    d = hooks_dir(home)
+    cmd_path = _posix(os.path.join(d, "run-hook.cmd"))
+    for name in card_hooks(card):
+        meta = HOOK_EVENTS.get(name)
+        if meta:
+            # Поставляемая реализация — через полиглот, как хук самого плагина.
+            entry = {"type": "command",
+                     "command": '"%s" %s' % (cmd_path, name),
+                     "shell": "bash", "async": False,
+                     "timeout": HOOK_TIMEOUT,
+                     "statusMessage": meta["status"]}
+            event, matcher = meta["event"], meta["matcher"]
+        else:
+            # Чужой скрипт: зовётся напрямую, по своему shebang. Через полиглот
+            # его пришлось бы объявить bash-скриптом, а он может быть любым.
+            entry = {"type": "command",
+                     "command": '"%s"' % _posix(os.path.join(d, name)),
+                     "timeout": HOOK_TIMEOUT}
+            event, matcher = hook_event(name), "*"
+        group = {"hooks": [entry]}
+        if matcher:
+            group["matcher"] = matcher
+        spec.setdefault(event, []).append(group)
+    return spec
+
+
+def installed_hooks(home):
+    """Хуки, ДЕЙСТВИТЕЛЬНО зарегистрированные в правах этого дома.
+
+    Читается settings.json, а не карточка: карточка говорит о намерении, а
+    показать надо то, что на диске. Разошлись — видно сразу.
+    """
+    try:
+        with open(os.path.join(home, ".claude", "settings.json"),
+                  encoding="utf-8") as fh:
+            spec = json.load(fh).get("hooks") or {}
+    except Exception:
+        return []
+    out = []
+    for groups in spec.values():
+        for g in groups or []:
+            for h in g.get("hooks") or []:
+                cmd = (h.get("command") or "").rstrip().rstrip('"')
+                # Два написания команды, потому что их два и в установке:
+                # поставляемая реализация зовётся через полиглот и стоит
+                # последним словом, чужой скрипт — сам собой, и тогда имя
+                # видно в конце пути.
+                name = cmd.rsplit(" ", 1)[-1].replace("\\", "/").rsplit("/", 1)[-1]
+                if name and name not in out and (name in HOOK_EVENTS
+                                                 or hook_event(name)):
+                    out.append(name)
+    return sorted(out)
+
+
+def install_hooks(home, project, role, card):
+    """Положить реализации в дом и написать им рецепт.
+
+    Зовётся из apply_grants вместе с правами, а не отдельно: раздельные вызовы
+    и есть та дыра, на которой launch.json однажды разошёлся с settings.json —
+    всякий, кто вспомнит один, забудет другой.
+    """
+    names = card_hooks(card)
+    if not names:
+        return []
+    d = hooks_dir(home)
+    os.makedirs(d, exist_ok=True)
+    # Ставится только то, что плагин ВЕЗЁТ. Имя события без реализации — это
+    # чужой скрипт: его кладёт хозяин дома, и за его отсутствие отвечает проба,
+    # а не выдуманный здесь пустой файл.
+    mine = [n for n in names if n in HOOK_EVENTS]
+    if not mine:
+        return [_write_hook_config(d, home, project, role, names, card)]
+    src = os.path.join(plugin_dir(), "hooks")
+    bins = os.path.dirname(os.path.abspath(__file__))
+    plan = [(os.path.join(src, "run-hook.cmd"), "run-hook.cmd")]
+    plan += [(os.path.join(src, "assistant", f), f) for f in HOOK_SHIPPED]
+    plan += [(os.path.join(bins, "cckit_learned.py"), "cckit_learned.py")]
+    plan += [(os.path.join(src, "assistant", n), n) for n in mine]
+    out = []
+    for s, name in plan:
+        if not os.path.isfile(s):
+            die("плагин не везёт реализацию хука: " + s)
+        dst = os.path.join(d, name)
+        shutil.copyfile(s, dst)
+        os.chmod(dst, os.stat(dst).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        out.append(dst)
+    out.append(_write_hook_config(d, home, project, role, names, card))
+    return out
+
+
+def _write_hook_config(d, home, project, role, names, card):
+    """Рецепт рядом с хуками: дом, проект, ведомость. Хук читает его, а не
+    угадывает — и всё же умеет обойтись без него (см. `_home` в cckit_hook)."""
+    cfg = os.path.join(d, "config.json")
+    with open(cfg, "w", encoding="utf-8") as fh:
+        json.dump({"role": role, "home": home, "project": project,
+                   "hooks": list(names), "ledger": card_ledgers(card),
+                   "note": "сгенерировано cckit assistant install — "
+                           "правка исчезнет при reset"},
+                  fh, indent=1, ensure_ascii=False)
+    return cfg
+
+
 def compile_settings(card, project, home, role, granted=None, extra_read=None):
     access = card.get("access", "read-only")
     writes = card.get("writes", []) or []
@@ -264,7 +466,11 @@ def compile_settings(card, project, home, role, granted=None, extra_read=None):
 
     effort = card.get("effort", "high")
     model = card.get("model", "claude-opus-5")
-    return {
+    # `card_hooks` роняет установку на незнакомом имени, и зовётся оно отсюда
+    # нарочно: правила пишут и install, и reset, и grant — проверка обязана
+    # стоять там, где проходят все трое, а не в одном из них.
+    hooks = compile_hooks(home, card)
+    out = {
         "agent": role,
         "model": model,
         # effortLevel tops out at xhigh; `max` only lives in maxEffortLevel.
@@ -288,6 +494,11 @@ def compile_settings(card, project, home, role, granted=None, extra_read=None):
         "autoDreamEnabled": False,
         "includeGitInstructions": False,
     }
+    # Пустой раздел не пишется: `"hooks": {}` читается как «хуки настроены»
+    # и прячет карточку, которая не объявила ни одного.
+    if hooks:
+        out["hooks"] = hooks
+    return out
 
 
 def render_role_body(role_md, project, home):
@@ -304,7 +515,7 @@ def write_card(home, role, card, body):
           "memory": "project"}
     ignored = [k for k in card if k not in
                ("name", "summary", "access", "writes", "model", "effort",
-                "budget_usd", "compact_at")]
+                "budget_usd", "compact_at", "hooks", "ledger")]
     if ignored:
         print("карточка: ключи без действия, отброшены: " + ", ".join(ignored))
     path = os.path.join(home, ".claude", "agents", role + ".md")
@@ -382,6 +593,9 @@ def apply_grants(home, role, project, card, granted, extra_read=None):
     write_launch_json(home, role, project, granted, card.get("budget_usd"),
                       extra_read=extra_read)
     write_settings(home, role, project, card, granted, extra_read=extra_read)
+    # Запись в settings.json без файла рядом — это хук, который не сработает,
+    # и узнать об этом можно только по тому, что ничего не произошло.
+    install_hooks(home, project, role, card)
 
 
 def read_recipe(home):
@@ -558,6 +772,343 @@ def probe_prompt(home, project, body):
             len(rest), fingerprint(rest))
     tail = "с блоком памяти" if rest else "без добавок"
     return "ок", "частей: %d, %s" % (len(parts), tail)
+
+
+
+# ── Проба хуков ────────────────────────────────────────────────────────────
+# Хук, который не сработал, неотличим от отсутствующего. Ни «файл на месте», ни
+# «запись в settings.json есть» этого не различают: ровно так же выглядит хук,
+# чью команду CLI не выполнил ни разу.
+#
+# ДВА ПРОСТРАНСТВА ИМЁН, и это не дубликат. `HOOK_EVENTS` выше — имена
+# РЕАЛИЗАЦИЙ, которые везёт плагин (report-done, lint-learned, read-ledger):
+# карточка называет их, установщик кладёт файлы в дом. Таблица ниже — то же
+# событие, названное по-человечески, для карточки, которая пишет событие
+# напрямую. Обе разрешает `hook_event`, и реализации идут первыми: имя,
+# у которого есть файл, всегда весомее псевдонима события.
+HOOK_EVENT_ALIASES = {
+    "session-start": "SessionStart",
+    "user-prompt-submit": "UserPromptSubmit",
+    "pre-tool-use": "PreToolUse",
+    "post-tool-use": "PostToolUse",
+    "stop": "Stop",
+    "subagent-stop": "SubagentStop",
+    "pre-compact": "PreCompact",
+    "notification": "Notification",
+}
+
+# Нонс, а не показание. «Видишь ли ты контекст из хука» подделывается ответом
+# «вижу»; уникальная строка, которой нет на диске и которую не угадать, — нет.
+HOOK_NONCE_PREFIX = "CCKIT-HOOK-"
+
+# Порядок строгости: чем левее, тем громче. Общий вердикт — самый левый из
+# встреченных, чтобы один сломанный хук не прятался за двумя исправными.
+#
+#   НЕ СРАБОТАЛ — CLI не выполнил команду ни разу;
+#   СЛОМАН      — выполнил, и она упала;
+#   НЕ ДОШЁЛ    — отработала, а последствия нет: контекст не доехал, строки в
+#                 журнале не прибавилось;
+#   НЕ РАЗЛИЧИЛ — сработала на всём подряд или ни на чём: сторож, который
+#                 блокирует и правильную запись, — тот же ложный красный;
+#   НЕ ДОКАЗАН  — наблюдать было не на чем, модель не сделала ни одной правки.
+HOOK_STATES = ("НЕ СРАБОТАЛ", "СЛОМАН", "НЕ ДОШЁЛ", "НЕ РАЗЛИЧИЛ",
+               "НЕ ДОКАЗАН", "ок")
+
+# Обёртка живёт ВНЕ дома ассистента, и это не мелочь: дом разрешён ему на
+# запись, так что улика, положенная туда, — это улика, которую он может
+# подделать сам. Обёртка запускает настоящую команду ровно один раз, кладёт на
+# диск её код возврата и пропускает её вывод дальше, чтобы семантика хука не
+# изменилась от самого факта наблюдения.
+_HOOK_WRAPPER = r"""#!/usr/bin/env python3
+import json
+import os
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+with open(os.path.join(HERE, "plan.json"), encoding="utf-8") as fh:
+    PLAN = json.load(fh)
+
+name = sys.argv[1]
+spec = PLAN["hooks"][name]
+payload = ""
+try:
+    if not sys.stdin.isatty():
+        payload = sys.stdin.read()
+except Exception:
+    payload = ""
+
+p = subprocess.run(spec["command"], shell=True, input=payload,
+                   capture_output=True, text=True, cwd=PLAN["cwd"])
+
+# Заблокировал ли хук — видно по ЕГО СОБСТВЕННОМУ выводу, а не по диску:
+# PostToolUse зовут ПОСЛЕ того, как правка уже применена, и отменить её он не
+# может. «Посмотреть, легла ли запись» здесь показало бы «легла» всегда.
+blocked = False
+try:
+    d = json.loads(p.stdout or "{}")
+    if isinstance(d, dict):
+        blocked = (d.get("decision") == "block"
+                   or (d.get("hookSpecificOutput") or {}).get(
+                       "permissionDecision") == "deny")
+except Exception:
+    blocked = False
+
+targets = []
+try:
+    ti = (json.loads(payload or "{}") or {}).get("tool_input") or {}
+    for k in ("file_path", "filePath", "path", "notebook_path"):
+        v = ti.get(k)
+        if isinstance(v, str) and v:
+            targets.append(os.path.basename(v))
+except Exception:
+    targets = []
+
+# Дописыванием, а не перезаписью: PostToolUse зовут много раз за ход, и
+# последний вызов затёр бы показания всех прежних.
+with open(os.path.join(PLAN["evidence"], name + ".jsonl"), "a",
+          encoding="utf-8") as fh:
+    fh.write(json.dumps({"rc": p.returncode, "blocked": blocked,
+                         "targets": targets,
+                         "err": (p.stderr or "")[-400:]},
+                        ensure_ascii=False) + "\n")
+
+if spec["event"] == "SessionStart":
+    inner = ""
+    try:
+        d = json.loads(p.stdout or "{}")
+        inner = ((d.get("hookSpecificOutput") or {}).get("additionalContext")
+                 or d.get("additional_context") or "")
+    except Exception:
+        inner = ""
+    ctx = PLAN["nonce_line"] + (("\n\n" + inner) if inner else "")
+    sys.stdout.write(json.dumps(
+        {"additional_context": ctx,
+         "hookSpecificOutput": {"hookEventName": "SessionStart",
+                                "additionalContext": ctx}},
+        ensure_ascii=False) + "\n")
+else:
+    sys.stdout.write(p.stdout or "")
+sys.stderr.write(p.stderr or "")
+sys.exit(p.returncode)
+"""
+
+
+def hook_event(name):
+    """Имя хука из карточки → имя события харнесса, или None.
+
+    Принимается и имя реализации (`read-ledger`), и имя события по-человечески
+    (`session-start`, `SessionStart`): карточка — человеческий файл, и
+    расхождение в написании не должно оборачиваться молчаливым «хуков не
+    объявлено».
+    """
+    key = (name or "").strip()
+    if key in HOOK_EVENTS:
+        return HOOK_EVENTS[key]["event"]
+    if key in HOOK_EVENT_ALIASES:
+        return HOOK_EVENT_ALIASES[key]
+    if key in HOOK_EVENT_ALIASES.values():
+        return key
+    return None
+
+
+def _hook_effect(name, ev, runs, reply, nonce, home, reports_before):
+    """Последствие хука — то, ради чего он заведён. Код возврата 0 его не
+    доказывает: `cckit_hook.py` ловит свои исключения и выходит нулём нарочно,
+    чтобы не ронять ход ассистента. Значит «упал» и «отработал вхолостую» с
+    той стороны выглядят одинаково, и спрашивать надо про последствие.
+    """
+    if ev == "SessionStart":
+        # Нонса нет нигде на диске: он рождается в этой функции и уезжает
+        # только контекстом. Вернулся в ответе — контекст правда доехал.
+        if nonce in reply:
+            return "ок", "нонс вернулся — контекст дошёл до модели"
+        return "НЕ ДОШЁЛ", "выполнился, а контекст до модели не дошёл"
+
+    if name == "lint-learned":
+        touched = [r for r in runs if "LEARNED.md" in (r.get("targets") or [])]
+        if not touched:
+            # Без этого «ничего не заблокировано» было бы неотличимо от
+            # «нечего было блокировать», и проба зеленела бы от бездействия.
+            return "НЕ ДОКАЗАН", "модель не тронула LEARNED.md — наблюдать блокировку не на чем"
+        blocked = [r for r in touched if r.get("blocked")]
+        if not blocked:
+            return "НЕ РАЗЛИЧИЛ", "запись без статуса прошла — линтер не возразил"
+        if len(blocked) == len(touched):
+            return "НЕ РАЗЛИЧИЛ", "заблокировал и правильную запись — ложный красный"
+        return "ок", "запись без статуса заблокирована, правильная пропущена"
+
+    if name == "report-done":
+        if _reports_lines(home) > reports_before:
+            return "ок", "строка о конце хода дописана в reports.jsonl"
+        return "НЕ ДОШЁЛ", "выполнился, а строки в reports.jsonl не прибавилось"
+
+    return "ок", "выполнился, rc=0 (последствие не проверялось: вызовов %d)" % len(runs)
+
+
+def _reports_lines(home):
+    p = os.path.join(home, "reports.jsonl")
+    try:
+        with open(p, encoding="utf-8") as fh:
+            return sum(1 for line in fh if line.strip())
+    except Exception:
+        return 0
+
+
+def probe_hooks(home, project, card=None, granted=None):
+    """Сработал ли хук на самом деле — не «лежит ли файл» и не «есть ли запись».
+
+    Обёртка встаёт на место зарегистрированной команды на один прогон, зовёт её
+    ровно один раз и кладёт показания ВНЕ дома: дом разрешён ассистенту на
+    запись, и улика, лежащая там, — улика, которую он может написать сам.
+
+    Дальше спрашивается последствие, а не факт запуска (`_hook_effect`):
+    нонс из контекста, решение линтера, прибавившаяся строка в журнале.
+
+    Проба ничего не оставляет после себя: settings.json возвращается байт в
+    байт, LEARNED.md — как был, рабочий каталог удаляется. Проба, меняющая то,
+    что проверяет, однажды уже навсегда занесла созданный ею каталог в запреты
+    проекта.
+    """
+    import tempfile  # локально: заголовок файла правит сейчас соседний агент
+
+    declared = (card or {}).get("hooks") or []
+    if isinstance(declared, str):
+        declared = [x.strip() for x in declared.split(",") if x.strip()]
+    if not declared:
+        # НЕ «ок»: пробовать было нечего, и называть это проверкой нельзя.
+        return "не объявлены", "карточка не объявляет hooks"
+
+    spath = os.path.join(home, ".claude", "settings.json")
+    try:
+        with open(spath, encoding="utf-8") as fh:
+            raw = fh.read()
+        settings = json.loads(raw)
+    except Exception as e:
+        return "НЕ ЗАРЕГИСТРИРОВАН", "settings.json не читается: %s" % e
+
+    registered = settings.get("hooks") or {}
+    plan, problems = {}, []
+    for name in declared:
+        ev = hook_event(name)
+        if not ev:
+            problems.append("%s: нет такого события" % name)
+            continue
+        cmds = [h.get("command", "")
+                for group in (registered.get(ev) or [])
+                for h in (group.get("hooks") or [])]
+        mine = [c for c in cmds if name in c]
+        if not mine:
+            problems.append("%s: не зарегистрирован под %s" % (name, ev))
+            continue
+        if not os.path.exists(os.path.join(hooks_dir(home), name)):
+            problems.append("%s: зарегистрирован, а реализации в доме нет" % name)
+            continue
+        plan[name] = {"event": ev, "command": mine[0]}
+    if problems:
+        return "НЕ ЗАРЕГИСТРИРОВАН", "; ".join(problems)
+
+    nonce = HOOK_NONCE_PREFIX + uuid.uuid4().hex[:12].upper()
+    marker = "HOOKPROBE-" + uuid.uuid4().hex[:8].upper()
+    learned = os.path.join(home, "LEARNED.md")
+    had_learned = os.path.exists(learned)
+    saved_learned = None
+    if had_learned:
+        with open(learned, encoding="utf-8") as fh:
+            saved_learned = fh.read()
+    reports_before = _reports_lines(home)
+
+    work = tempfile.mkdtemp(prefix="cckit-hookprobe-")
+    evidence = os.path.join(work, "evidence")
+    os.makedirs(evidence)
+    try:
+        wrapper = os.path.join(work, "wrap.py")
+        with open(wrapper, "w", encoding="utf-8") as fh:
+            fh.write(_HOOK_WRAPPER)
+        with open(os.path.join(work, "plan.json"), "w", encoding="utf-8") as fh:
+            json.dump({"hooks": plan, "evidence": evidence, "cwd": home,
+                       "nonce_line": "Кодовое слово этой сессии: " + nonce},
+                      fh, ensure_ascii=False)
+
+        for name, spec in plan.items():
+            for group in registered.get(spec["event"]) or []:
+                for h in group.get("hooks") or []:
+                    if h.get("command") == spec["command"]:
+                        h["command"] = '"%s" "%s" %s' % (
+                            sys.executable, _posix(wrapper), name)
+        with open(spath, "w", encoding="utf-8") as fh:
+            json.dump(settings, fh, indent="\t", ensure_ascii=False)
+            fh.write("\n")
+
+        ask = []
+        if any(s["event"] == "SessionStart" for s in plan.values()):
+            ask.append("Назови кодовое слово, пришедшее тебе в контексте в начале "
+                       "сессии: оно начинается на %s. Если такого слова в контексте "
+                       "нет, напиши ровно НЕТ." % HOOK_NONCE_PREFIX)
+        if "lint-learned" in plan:
+            # Пара, а не одна запись: одной нельзя отличить «сторож
+            # сработал» от «сторож блокирует всё подряд».
+            ask.append("Допиши в конец файла %s две записи, каждую отдельной "
+                       "правкой: сначала «## %s со статусом» и под ней строку "
+                       "«**Статус: наблюдение** (2026-09-24, проба).», затем "
+                       "«## %s без статуса» без всякой строки статуса."
+                       % (learned, marker, marker))
+        if not ask:
+            ask.append("Ответь одним словом: готов.")
+        res, err = run_assistant(home, project, " ".join(ask), budget="0.10")
+        if err or res is None:
+            return "не запускалась", err or "нет ответа"
+        reply = res.get("result") or ""
+
+        def learned_changed():
+            try:
+                with open(learned, encoding="utf-8") as fh:
+                    return fh.read() != (saved_learned or "")
+            except OSError:
+                return had_learned
+
+        by_hook = {}
+        for name, spec in plan.items():
+            runs = []
+            epath = os.path.join(evidence, name + ".jsonl")
+            if os.path.exists(epath):
+                with open(epath, encoding="utf-8") as fh:
+                    runs = [json.loads(l) for l in fh if l.strip()]
+            if not runs:
+                # «Не сработал» и «звать было не на чем» — разные вещи, и
+                # путать их нельзя в обе стороны: PostToolUse не зовут, когда
+                # модель не сделала ни одной правки. Спрашивается диск: файл
+                # изменился, а хука не было — вот это поломка.
+                if name == "lint-learned" and not learned_changed():
+                    by_hook[name] = ("НЕ ДОКАЗАН",
+                                     "модель не тронула LEARNED.md — PostToolUse и звать было не на чем")
+                else:
+                    by_hook[name] = ("НЕ СРАБОТАЛ",
+                                     "CLI ни разу не выполнил команду под " + spec["event"])
+                continue
+            bad = [r for r in runs if r.get("rc") != 0]
+            if bad:
+                by_hook[name] = ("СЛОМАН", "выполнился и упал: rc=%s %s"
+                                 % (bad[0].get("rc"), (bad[0].get("err") or "")[:120]))
+                continue
+            by_hook[name] = _hook_effect(name, spec["event"], runs, reply,
+                                         nonce, home, reports_before)
+    finally:
+        with open(spath, "w", encoding="utf-8") as fh:
+            fh.write(raw)
+        if had_learned:
+            with open(learned, "w", encoding="utf-8") as fh:
+                fh.write(saved_learned)
+        elif os.path.exists(learned):
+            os.remove(learned)
+        shutil.rmtree(work, ignore_errors=True)
+
+    note = " · ".join("%s: %s — %s" % (n, by_hook[n][0], by_hook[n][1])
+                      for n in sorted(by_hook))
+    for state in HOOK_STATES:
+        if any(v[0] == state for v in by_hook.values()):
+            return state, note
+    return "ок", note
 
 
 CLAUDE_MD = """# {role} — привязка к проекту
@@ -795,7 +1346,7 @@ def cmd_install(argv):
             "home": home, "parent": os.environ.get("CCKIT_PARENT", "human"),
             "created": now(), "budget_usd": card.get("budget_usd"),
             "granted": sorted(granted),
-            "verified": {"containment": None, "prompt": None}}
+            "verified": {"containment": None, "prompt": None, "hooks": None}}
 
     print("дом собран: " + home)
     print("проба ограды…")
@@ -804,12 +1355,16 @@ def cmd_install(argv):
     print("проба мозга…")
     p_state, p_note = probe_prompt(home, project, body)
     print("  %s%s" % (p_state, (" — " + p_note) if p_note else ""))
+    print("проба хуков…")
+    h_state, h_note = probe_hooks(home, project, card, granted)
+    print("  %s%s" % (h_state, (" — " + h_note) if h_note else ""))
 
-    inst["verified"] = {"containment": c_state, "prompt": p_state, "at": now()}
+    inst["verified"] = {"containment": c_state, "prompt": p_state,
+                        "hooks": h_state, "at": now()}
     with open(os.path.join(home, "instance.json"), "w", encoding="utf-8") as fh:
         json.dump(inst, fh, indent=1, ensure_ascii=False)
 
-    if c_state == "ок" and p_state == "ок":
+    if c_state == "ок" and p_state == "ок" and h_state in ("ок", "не объявлены"):
         print("\nустановлен и проверен: %s\nuuid %s" % (home, inst["uuid"]))
         return 0
     print("\nУСТАНОВЛЕН, НО НЕ ПРОВЕРЕН: " + home, file=sys.stderr)
@@ -995,11 +1550,15 @@ def cmd_reset(argv):
     print("пересобрано из роли. Сохранено: " + (", ".join(kept) if kept else "ничего (--hard)"))
     c_state, c_note = probe_containment(home, project, card, granted)
     p_state, p_note = probe_prompt(home, project, body)
-    print("проба ограды: %s · проба мозга: %s" % (c_state, p_state))
-    it["verified"] = {"containment": c_state, "prompt": p_state, "at": now()}
+    h_state, h_note = probe_hooks(home, project, card, granted)
+    print("проба ограды: %s · проба мозга: %s · проба хуков: %s"
+          % (c_state, p_state, h_state))
+    it["verified"] = {"containment": c_state, "prompt": p_state,
+                      "hooks": h_state, "at": now()}
     it["granted"] = sorted(granted)
     save_instance(it)
-    return 0 if c_state == "ок" and p_state == "ок" else 1
+    return 0 if (c_state == "ок" and p_state == "ок"
+                 and h_state in ("ок", "не объявлены")) else 1
 
 
 def cmd_tree(argv):
@@ -1040,6 +1599,11 @@ def cmd_show(argv):
     print("  выдано:   " + ", ".join(it.get("granted") or []))
     v = it.get("verified") or {}
     print("  проверен: ограда %s · мозг %s" % (v.get("containment"), v.get("prompt")))
+    # Чем дом действует сам. Не показать это значит оставить единственную
+    # живую часть дома невидимой — а невидимый хук неотличим от несработавшего.
+    hooks = installed_hooks(it["home"])
+    print("  сам делает: " + (", ".join("%s (%s)" % (n, HOOK_EVENTS[n]["event"])
+                                        for n in hooks) if hooks else "ничего"))
     rules = owner_rules(it["home"]).get("rules", [])
     if rules:
         print("  правила владельца:")
