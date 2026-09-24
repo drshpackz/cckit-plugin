@@ -40,11 +40,10 @@ def tools_of(groups):
 
 
 def denied_tools(granted):
-    """Что правда снимается с ребёнка: список для --disallowedTools.
+    """Что снимается с ребёнка флагом --disallowedTools — на пути установщика.
 
-    Не `permissions.deny` — там живут правила путей, и инструментов, кроме
-    `Bash`, там нет вовсе. Тест, который искал бы Monitor там, был бы зелёным
-    ровно до первого запуска.
+    На пути людей (вкладка) этого флага нет, и там держит только
+    `permissions.deny` в доме: см. `TestTheRulesFileHoldsEveryDenial`.
     """
     return set(ck.caps_to_disallowed(set(granted)))
 
@@ -104,6 +103,53 @@ class TestNoToolEscapesTheDenylist(unittest.TestCase):
         off = denied_tools(set(ck.CAPS))
         for tool in ck.NEVER:
             self.assertIn(tool, off, tool)
+
+
+def bare_denies(s):
+    """Голые имена инструментов в `permissions.deny` — точным сравнением, без
+    подстрок: `Edit(//p/src/**)` — запрет пути, не инструмента."""
+    return set(r for r in s["permissions"]["deny"] if "(" not in r)
+
+
+class TestTheRulesFileHoldsEveryDenial(unittest.TestCase):
+    """Ограда, живущая в argv, существует только на пути, который её пишет.
+
+    Вкладка запускает claude без --disallowedTools. Измерено 2026-09-24: дом
+    design-hand с одним `Bash` в deny отдал ассистенту ListAgents и
+    SendMessage, запрещённые ему в launch.json.
+    """
+
+    def test_every_disallowed_tool_is_a_bare_deny_for_every_grant(self):
+        for granted in all_subsets(ck.CAPS):
+            self.assertEqual(
+                bare_denies(settings(granted=granted)), denied_tools(granted),
+                "при выданных %s правила в доме разошлись с --disallowedTools"
+                % (sorted(granted) or "—"))
+
+    def test_granted_tools_never_land_in_deny(self):
+        # spawn → Agent/Task/Workflow/TaskStop, peers → SendMessage/ListAgents:
+        # выданное грантом, попав в deny, было бы выдачей, которой нет.
+        for granted in all_subsets(ck.CAPS):
+            self.assertEqual(bare_denies(settings(granted=granted)) & tools_of(granted),
+                             set(), "при выданных %s" % sorted(granted))
+
+    def test_the_rules_written_to_disk_name_the_peers_tools(self):
+        # Через настоящую запись, а не через compile_settings: дыра жила
+        # именно в файле, который читает вкладка.
+        with Sandbox() as sb:
+            home = os.path.join(sb.home, "inst")
+            os.makedirs(os.path.join(home, ".claude"))
+            ck.apply_grants(home, "t", sb.project,
+                            {"name": "t", "access": "read-only"},
+                            set(ck.BASE_CAPS), extra_read=[])
+            with open(os.path.join(home, ".claude", "settings.json"),
+                      encoding="utf-8") as fh:
+                deny = bare_denies(json.load(fh))
+            with open(os.path.join(home, "launch.json"), encoding="utf-8") as fh:
+                flags = set(json.load(fh)["disallowed_tools"])
+        self.assertEqual((deny == flags, {"ListAgents", "SendMessage", "WebFetch",
+                                          "Monitor", "Agent", "Task"} <= deny),
+                         (True, True), sorted(flags - deny))
 
 
 class TestPathRules(unittest.TestCase):

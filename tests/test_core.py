@@ -185,3 +185,41 @@ class TestSkillIsolation(unittest.TestCase):
         # Флаг не должен зависеть от соседних ветвей: изоляция нужна всегда.
         argv = core.launch_argv("q", "/p", [], False, "0.5")
         self.assertIn("--setting-sources", argv)
+
+
+class TestPeoplePath(unittest.TestCase):
+    """Путь людей повторяется пробой без argv-ограды — иначе это снова проба
+    argv, та самая, что пропустила вкладку без 20 запретов из 21."""
+
+    def test_people_argv_carries_no_argv_fence(self):
+        argv = core.people_argv("q", "0.5")
+        self.assertEqual(
+            ("--disallowedTools" in argv, "--add-dir" in argv,
+             argv[argv.index("--setting-sources") + 1],
+             "--max-budget-usd" in argv, "--strict-mcp-config" in argv),
+            (False, False, "user,project,local", True, True), argv)
+
+    def test_offered_tools_distinguishes_no_init_from_empty(self):
+        self.assertEqual(
+            (core.offered_tools([{"type": "result"}]),
+             core.offered_tools([{"type": "system", "subtype": "init", "tools": []}])),
+            (None, []))
+
+    def test_a_refused_call_is_called_but_not_succeeded(self):
+        box = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, box, True)
+        p = os.path.join(box, "t.jsonl")
+        with open(p, "w", encoding="utf-8") as fh:
+            for d in ({"type": "assistant", "message": {"content": [
+                          {"type": "tool_use", "id": "a", "name": "WebFetch"},
+                          {"type": "tool_use", "id": "b", "name": "Read"}]}},
+                      {"type": "user", "message": {"content": [
+                          {"type": "tool_result", "tool_use_id": "a", "is_error": True},
+                          {"type": "tool_result", "tool_use_id": "b"}]}},
+                      {"type": "attachment", "attachment": {
+                          "type": "deferred_tools_delta", "addedNames": ["Monitor"]}}):
+                fh.write(json.dumps(d) + "\n")
+        self.assertEqual(core.transcript_tool_facts(p),
+                         {"called": ["WebFetch", "Read"], "succeeded": ["Read"],
+                          "deferred": ["Monitor"]})
+

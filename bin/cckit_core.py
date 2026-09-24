@@ -57,6 +57,116 @@ def launch_argv(prompt, project, disallowed, strict_mcp, budget, extra=None):
     return argv
 
 
+# Как ассистента запускают ЛЮДИ: вкладка `claude-open-tab` зовёт
+# `claude --model opus --setting-sources=user,project,local` — без
+# --disallowedTools, без --add-dir, без --strict-mcp-config. Ограда, которой
+# нет в файлах дома, на этом пути не существует (измерено 2026-09-24: в
+# транскрипте design-hand есть отработавшие ListAgents и SendMessage, оба
+# числились в запретах его launch.json).
+PEOPLE_SETTING_SOURCES = "user,project,local"
+
+
+def people_argv(prompt, budget, extra=None):
+    """Путь людей, повторённый для пробы. Не для работы — для проверки.
+
+    Отличий от вкладки ровно два, и оба названы:
+      * `-p` вместо интерактивного окна — иначе пробу некому вести;
+      * `--strict-mcp-config` остаётся. Проба просит модель пробовать
+        запрещённое «любым способом», а MCP-серверы владельца умеют писать в
+        его живые сессии. Ось MCP эта проба поэтому НЕ проверяет.
+    Всё остальное, что ставит `launch_argv` — --disallowedTools и --add-dir —
+    здесь отсутствует нарочно: проба, получившая их, проверяет argv, а не дом.
+    """
+    argv = ["claude", "-p", prompt,
+            "--setting-sources", PEOPLE_SETTING_SOURCES,
+            "--max-budget-usd", str(budget or "1.00"),
+            "--strict-mcp-config"]
+    if extra:
+        argv.extend(extra)
+    return argv
+
+
+def run_claude_events(cwd, argv, timeout=600):
+    """Как `run_claude`, но для `--output-format stream-json --verbose`:
+    возвращает список событий, а не один ответ. Первое из них — `init` с
+    набором инструментов, который харнесс РЕАЛЬНО выдал модели. Это слова
+    харнесса, а не модели, и подделать их ответом нельзя."""
+    name = argv[0] if argv else "claude"
+    exe = shutil.which(name)
+    if not exe:
+        return None, "claude не найден в PATH: %s" % name
+    argv = [os.path.abspath(exe)] + list(argv[1:])
+    try:
+        p = subprocess.run(argv, cwd=cwd, env=isolated_env(),
+                           stdin=subprocess.DEVNULL,
+                           capture_output=True, text=True, timeout=timeout)
+    except Exception as e:
+        return None, str(e)
+    events = []
+    for line in (p.stdout or "").splitlines():
+        try:
+            d = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(d, dict):
+            events.append(d)
+    return events, None
+
+
+def offered_tools(events):
+    """Набор инструментов из события `init`, или None, если его не было.
+
+    None и пустой список — разные ответы: «харнесс не назвал набор» нельзя
+    читать как «запрещённого в наборе нет»."""
+    for d in events or ():
+        if d.get("type") == "system" and d.get("subtype") == "init":
+            tools = d.get("tools")
+            if isinstance(tools, list):
+                return [t for t in tools if isinstance(t, str)]
+    return None
+
+
+def session_of(events):
+    for d in events or ():
+        if d.get("session_id"):
+            return d["session_id"]
+    return None
+
+
+def transcript_tool_facts(path):
+    """Только структурные поля стенограммы: какие инструменты звали, какие
+    вызовы вернулись ошибкой, какие имена харнесс объявил отложенными.
+
+    Содержимое вызовов, результатов и промпта не читается вовсе — ответ нужен
+    «звали ли», а не «что там было».
+    """
+    uses, failed, deferred = [], set(), set()
+    with open(path, encoding="utf-8", errors="ignore") as fh:
+        for line in fh:
+            try:
+                d = json.loads(line)
+            except Exception:
+                continue
+            a = d.get("attachment")
+            if isinstance(a, dict) and a.get("type") == "deferred_tools_delta":
+                deferred |= set(n for n in (a.get("addedNames") or [])
+                                if isinstance(n, str))
+            m = d.get("message")
+            content = m.get("content") if isinstance(m, dict) else None
+            if not isinstance(content, list):
+                continue
+            for b in content:
+                if not isinstance(b, dict):
+                    continue
+                if b.get("type") == "tool_use":
+                    uses.append((b.get("id"), b.get("name")))
+                elif b.get("type") == "tool_result" and b.get("is_error"):
+                    failed.add(b.get("tool_use_id"))
+    return {"called": [n for _, n in uses],
+            "succeeded": [n for i, n in uses if i not in failed],
+            "deferred": sorted(deferred)}
+
+
 def run_claude(cwd, argv, timeout=600):
     """Returns the parsed `--output-format json` result, or an error string.
 
