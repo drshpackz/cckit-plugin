@@ -7,9 +7,9 @@
 | id | вид | даёт | статус | версия | что это |
 |---|---|---|---|---|---|
 | seed-record | format | writes-findings | wired-later | c277b30 | запись-зерно — одна находка, самодостаточная: вопрос, коммит, уверенность, источник, вердикт первым |
-| lint-learned | hook | keeps-learned | works | c277b30 | запись в LEARNED.md без статуса не проходит |
-| read-ledger | hook | reads-ledger | works | c277b30 | SessionStart — ведомость проекта в контекст; актуальное не переисследуется |
-| report-done | hook | reports-to-main | works | c277b30 | Stop — строка в <дом>/reports.jsonl в конце каждого хода; основной агент узнаёт о конце без опроса |
+| lint-learned | hook | keeps-learned | works | не в git | запись в LEARNED.md без статуса не проходит |
+| read-ledger | hook | reads-ledger | works | не в git | SessionStart — ведомость проекта в контекст; актуальное не переисследуется |
+| report-done | hook | reports-to-main | works | не в git | Stop — строка в <дом>/reports.jsonl в конце каждого хода; основной агент узнаёт о конце без опроса |
 | fan-out | practice | splits-work | works | c277b30 | независимые части работы — субагентам, сразу; модель сама не делит, пока ей не сказано |
 | write-early | practice | long-tasks | works | c277b30 | результат — в файл с первых минут, по частям; план в голове пропадает при сжатии |
 | window-1m | setting | long-tasks | works | c277b30 | окно 1M и порог сжатия у края окна — длинная задача не сжимается посередине |

@@ -2,7 +2,7 @@
 """Библиотека компонентов: манифесты → индекс → заказ установки.
 
 Источник правды — манифесты в git рядом с компонентами (`component.yaml`, у хуков —
-`hooks/components/<id>.yaml`). Каталог генерируется, руками не правится; версия компонента —
+`components/hooks/<id>.yaml`). Каталог генерируется, руками не правится; версия компонента —
 последний коммит его файлов. Заказ — не чтение таблицы: основной агент называет, ЧТО нужно
 ассистенту, решатель подбирает компоненты по `provides`.
 
@@ -36,7 +36,7 @@ def manifest_paths():
         files = [os.path.relpath(os.path.join(d, f), ROOT) for d, _, fs in os.walk(ROOT) for f in fs]
     else:
         files = out.split()
-    return sorted(f for f in files if f.endswith("component.yaml") or (f.startswith("hooks/components/") and f.endswith(".yaml")))
+    return sorted(f for f in files if f.endswith("component.yaml") or (f.startswith("components/") and f.endswith(".yaml")))
 
 
 def parse(text):

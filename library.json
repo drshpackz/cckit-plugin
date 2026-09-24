@@ -47,8 +47,8 @@
    "grants": [],
    "writes": [],
    "hooks": [],
-   "manifest": "hooks/components/lint-learned.yaml",
-   "version": "c277b30"
+   "manifest": "components/hooks/lint-learned.yaml",
+   "version": "не в git"
   },
   {
    "id": "read-ledger",
@@ -74,8 +74,8 @@
    "grants": [],
    "writes": [],
    "hooks": [],
-   "manifest": "hooks/components/read-ledger.yaml",
-   "version": "c277b30"
+   "manifest": "components/hooks/read-ledger.yaml",
+   "version": "не в git"
   },
   {
    "id": "report-done",
@@ -99,8 +99,8 @@
    "grants": [],
    "writes": [],
    "hooks": [],
-   "manifest": "hooks/components/report-done.yaml",
-   "version": "c277b30"
+   "manifest": "components/hooks/report-done.yaml",
+   "version": "не в git"
   },
   {
    "id": "fan-out",
