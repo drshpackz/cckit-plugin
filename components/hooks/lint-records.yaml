@@ -1,0 +1,11 @@
+id: lint-records
+kind: hook
+summary: PreToolUse — запись в records: карточки, не прошедшая линтер формата, не ложится на диск
+provides: [writes-findings]
+requires_input: [records]
+card_key: hooks
+card_value: lint-records
+status: works
+proof: tests/test_records.py, проба хуков при установке
+origin: 1.3
+files: [hooks/assistant/lint-records, hooks/assistant/cckit_hook.py, hooks/run-hook.cmd]

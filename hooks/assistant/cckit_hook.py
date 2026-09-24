@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Три хука дома ассистента. Один файл на три имени: решают они разное, а
+"""Хуки дома ассистента. Один файл на все имена: решают они разное, а
 падать обязаны одинаково.
 
 Хук — единственное, чем дом действует САМ, в моменты своей жизни, а не когда
@@ -141,7 +141,9 @@ LEARNED = "LEARNED.md"
 
 
 def _is_learned(path):
-    return isinstance(path, str) and os.path.basename(path) == LEARNED
+    # Без учёта регистра: на APFS learned.md и LEARNED.md — один и тот же файл
+    # (взломщик 1.2 положил запись без статуса через «learned.md» мимо линтера).
+    return isinstance(path, str) and os.path.basename(path).lower() == LEARNED.lower()
 
 
 def _read_or_none(path):
@@ -169,16 +171,19 @@ def _apply_edit(text, old, new, replace_all):
     return text.replace(old, new) if replace_all else text.replace(old, new, 1)
 
 
-def _after_write(tool, ti, cwd):
-    """(путь, текст до, текст после) для правки LEARNED.md.
+def _after_write(tool, ti, cwd, match=None):
+    """(путь, текст до, текст после) для правки файла, который узнаёт `match`
+    (по умолчанию — LEARNED.md). `match` получает абсолютный путь.
 
     None — не наш файл. Текст после — None, если правку не удалось
     воспроизвести; тогда судят по вставке, а не пропускают."""
     path = ti.get("file_path")
-    if not _is_learned(path):
+    if not isinstance(path, str) or not path:
         return None
     if not os.path.isabs(path):
         path = os.path.join(cwd or os.getcwd(), path)
+    if not (match or _is_learned)(path):
+        return None
     before = _read_or_none(path)
     if tool == "Write":
         content = ti.get("content")
@@ -215,9 +220,13 @@ def _fragment_only(ti):
 def _new_problems(lint, before, after):
     """Только то, чего не было ДО правки. Файл, где уже лежит старая запись
     без статуса, иначе запирал бы любую запись, в том числе исправляющую —
-    и ассистент ушёл бы писать через Bash, мимо линтера."""
+    и ассистент ушёл бы писать через Bash, мимо линтера.
+
+    `before` None — файла до правки не было: сравнивать не с чем, и каждое
+    замечание новое (иначе пустой файл «уже без шапки» пропускал бы запись
+    без шапки)."""
     left = {}
-    for m in lint(before):
+    for m in (lint(before) if before is not None else []):
         left[m] = left.get(m, 0) + 1
     out = []
     for m in lint(after):
@@ -239,13 +248,13 @@ def _new_problems(lint, before, after):
 # трогается.
 _TOK = r"""["']?[^\s;|&<>()"']*LEARNED\.md(?![\w.])["']?"""
 _BASH_WRITES = (
-    ("перенаправление в файл", re.compile(r">\|?\s*" + _TOK)),
-    ("tee", re.compile(r"\btee\b[^;|&]*\s" + _TOK)),
+    ("перенаправление в файл", re.compile(r">\|?\s*" + _TOK, re.IGNORECASE)),
+    ("tee", re.compile(r"\btee\b[^;|&]*\s" + _TOK, re.IGNORECASE)),
     ("правка на месте (sed/perl -i)",
-     re.compile(r"\b(?:g?sed|perl)\b(?=[^;|&]*\s-[a-zA-Z]*i)[^;|&]*\s" + _TOK)),
+     re.compile(r"\b(?:g?sed|perl)\b(?=[^;|&]*\s-[a-zA-Z]*i)[^;|&]*\s" + _TOK, re.IGNORECASE)),
     ("cp/mv/install/rsync поверх файла",
-     re.compile(r"\b(?:cp|mv|install|rsync)\b[^;|&]*\s" + _TOK + r"\s*(?:$|[;|&)])")),
-    ("dd of=", re.compile(r"\bdd\b[^;|&]*\bof=" + _TOK)),
+     re.compile(r"\b(?:cp|mv|install|rsync)\b[^;|&]*\s" + _TOK + r"\s*(?:$|[;|&)])", re.IGNORECASE)),
+    ("dd of=", re.compile(r"\bdd\b[^;|&]*\bof=" + _TOK, re.IGNORECASE)),
 )
 _INTERP = re.compile(r"\b(?:python[0-9.]*|node|ruby|perl|php|deno|bun)\b")
 _INTERP_WRITE = re.compile(
@@ -255,7 +264,7 @@ _INTERP_WRITE = re.compile(
 
 def _bash_learned_write(cmd):
     """Какой формой команда пишет в LEARNED.md, или None."""
-    if not isinstance(cmd, str) or LEARNED not in cmd:
+    if not isinstance(cmd, str) or LEARNED.lower() not in cmd.lower():
         return None
     for label, rx in _BASH_WRITES:
         if rx.search(cmd):
@@ -418,8 +427,129 @@ def read_ledger(cfg, payload):
                                   "additionalContext": ctx}})
 
 
+# ── PreToolUse (Write|Edit|MultiEdit) — записи по формату ─────────────────
+#
+# Карточка несёт `formats: [<имя>]` и `records: <глоб от корня проекта>`;
+# установщик кладёт formats/<имя>/ в дом и пишет оба ключа в рецепт. Хук
+# вычисляет файл ПОСЛЕ правки тем же `_after_write`, что и lint-learned, и
+# отказывает, если линтер формата нашёл НОВОЕ замечание. Файлы вне records —
+# молчание. Bash здесь не ловится: формат — про файлы с записями, и обход
+# через шелл — та же эвристика, что у LEARNED.md, которую сюда не тянем.
+
+
+def _glob_rx(pattern):
+    """Глоб → регулярка: `*` и `?` не пересекают `/`, `**` — пересекает."""
+    out, i = [], 0
+    while i < len(pattern):
+        if pattern.startswith("**/", i):
+            out.append("(?:.*/)?")
+            i += 3
+        elif pattern.startswith("**", i):
+            out.append(".*")
+            i += 2
+        elif pattern[i] == "*":
+            out.append("[^/]*")
+            i += 1
+        elif pattern[i] == "?":
+            out.append("[^/]")
+            i += 1
+        else:
+            out.append(re.escape(pattern[i]))
+            i += 1
+    # Без учёта регистра: на macOS `Docs/X.md` — тот же файл, что `docs/x.md`,
+    # и харнесс сопоставляет правила так же. Цена на регистрозависимой ФС —
+    # лишняя сверка файла, чьё имя отличается от records только регистром.
+    return re.compile("".join(out) + r"\Z", re.IGNORECASE)
+
+
+def _slashes(p):
+    return os.path.normpath(p).replace("\\", "/")
+
+
+def records_match(path, project, globs):
+    """Попадает ли путь в records. Глоб — от корня проекта (или абсолютный).
+
+    Сравнение и по пути, и по realpath: CLI и установщик могут назвать один
+    каталог по-разному (на macOS /tmp и /private/tmp)."""
+    if not isinstance(path, str) or not path or not project:
+        return False
+    paths = {_slashes(path), _slashes(os.path.realpath(path))}
+    roots = {project, os.path.realpath(project)}
+    for g in globs or ():
+        for root in roots:
+            full = g if os.path.isabs(g) else os.path.join(root, g)
+            rx = _glob_rx(_slashes(full))
+            if any(rx.match(p) for p in paths):
+                return True
+    return False
+
+
+def _format_linter(name):
+    """`lint` из <дом>/formats/<имя>/lint.py, или None — и тогда сказано вслух."""
+    path = os.path.join(_home(), "formats", name, "lint.py")
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("cckit_format_" + name.replace("-", "_"), path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod.lint
+    except Exception as e:
+        _fail("lint-records",
+              "линтер формата %s не читается (%s: %s) — запись прошла бы "
+              "непроверенной" % (name, path, e))
+        return None
+
+
+def lint_records(cfg, payload):
+    """Правка файла из records — линтер формата ДО записи, отказ при новых
+    замечаниях. Чужие файлы — молча."""
+    ti = payload.get("tool_input")
+    if not isinstance(ti, dict):
+        return
+    project = cfg.get("project") or payload.get("cwd") or os.getcwd()
+    globs = _as_list(cfg.get("records"), ())
+    formats = _as_list(cfg.get("formats"), ())
+    if not globs or not formats:
+        _fail("lint-records", "в рецепте нет records или formats — сверять не с чем; "
+              "переустановите дом с --force")
+        return
+    got = _after_write(payload.get("tool_name") or "", ti,
+                       payload.get("cwd") or project,
+                       lambda p: records_match(p, project, globs))
+    if got is None:
+        return                      # не запись: молчание, а не отказ
+    path, before, after = got
+    if after is None:
+        # Правку не воспроизвести — и судить нечем: формат описывает файл
+        # целиком, а по одной вставке шапку не проверить. Edit, не нашедший
+        # old_string, откажет сам.
+        return
+    if not os.path.exists(path):
+        before = None
+    problems = []
+    for name in formats:
+        lint = _format_linter(name)
+        if lint is None:
+            continue
+        msgs = _new_problems(lint, before, after)
+        if msgs:
+            problems.append((name, msgs))
+    if not problems:
+        return
+    home = _home()
+    parts = []
+    for name, msgs in problems:
+        parts.append("%s не по формату %s (шаблон %s):" % (
+            path, name, os.path.join(home, "formats", name, "TEMPLATE.md")))
+        parts += ["  " + m for m in msgs]
+    _deny("\n".join(parts)
+          + "\n\nЗапись НЕ легла на диск. Прочтите шаблон, поправьте запись "
+            "и повторите правку.")
+
+
 HANDLERS = {"report-done": report_done,
             "lint-learned": lint_learned,
+            "lint-records": lint_records,
             "read-ledger": read_ledger}
 
 

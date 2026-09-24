@@ -18,6 +18,8 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 # вызов: молчание здесь намеренное, «не смог» сюда не попадает (cat со входа
 # хука не падает), а всё, что называет файл, решает питон.
 payload="$(cat)"
+# Без учёта регистра: learned.md на macOS — тот же LEARNED.md.
+shopt -s nocasematch
 case "$payload" in
 	*LEARNED.md*) ;;
 	*) exit 0 ;;

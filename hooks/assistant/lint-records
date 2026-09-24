@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# PreToolUse на Write|Edit|MultiEdit: отказать записи в файл из records
+# карточки, после которой линтер формата (<дом>/formats/<имя>/lint.py) найдёт
+# новое замечание. Файлы вне records — молчание.
+#
+# Обёртка тонкая нарочно, как у lint-learned: весь разбор — в cckit_hook.py
+# рядом. Имя файла БЕЗ «.sh» — зовётся через полиглот run-hook.cmd.
+#
+# `set -e` здесь нет намеренно: хук не вправе уронить ход ассистента.
+set -uo pipefail
+DIR="$(cd "$(dirname "$0")" && pwd)"
+payload="$(cat)"
+for py in python3 python; do
+	if command -v "$py" >/dev/null 2>&1; then
+		exec "$py" "$DIR/cckit_hook.py" lint-records <<<"$payload"
+	fi
+done
+# Питона нет — сказать об этом, а не промолчать кодом 0.
+printf '%s\n' '{"systemMessage":"хук lint-records: на этой машине нет python3, хук не отработал"}'
+exit 0

@@ -308,7 +308,7 @@ HOME_FENCED = (".claude/settings.json", ".claude/settings.local.json",
                ".claude/hooks/**", ".claude/agents/**", ".claude/skills/**",
                ".claude/commands/**", ".claude/CLAUDE.md", ".mcp.json",
                "CLAUDE.md", "CLAUDE.local.md", "launch.json", "instance.json",
-               "OWNER-RULES.json", "reports.jsonl")
+               "OWNER-RULES.json", "reports.jsonl", "formats/**")
 
 
 def home_denies(home):
@@ -357,6 +357,13 @@ HOOK_EVENTS = {
         "event": "SessionStart",
         "matcher": "startup|clear|compact",
         "status": "Читаю ведомость проекта",
+    },
+    # Записи по формату: файл из `records:` карточки проверяет линтер
+    # формата из `formats:` — до записи, как lint-learned. Bash не ловится.
+    "lint-records": {
+        "event": "PreToolUse",
+        "matcher": "Write|Edit|MultiEdit",
+        "status": "Сверяю запись с форматом",
     },
 }
 HOOK_TIMEOUT = 30
@@ -409,6 +416,127 @@ def card_hooks(card):
         if n not in out:
             out.append(n)
     return out
+
+
+def known_formats():
+    """Форматы, которые везёт плагин: formats/<имя>/ с TEMPLATE.md."""
+    root = os.path.join(plugin_dir(), "formats")
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        return []
+    return [n for n in names if os.path.isfile(os.path.join(root, n, "TEMPLATE.md"))]
+
+
+def _card_list(card, key):
+    v = card.get(key)
+    if isinstance(v, str):
+        v = [x.strip() for x in v.split(",") if x.strip()]
+    out = []
+    for x in v or []:
+        if x and x not in out:
+            out.append(x)
+    return out
+
+
+def card_formats(card):
+    """`formats:` карточки, проверенные против поставки плагина.
+
+    Неизвестное имя роняет установку с перечнем известных — по тому же
+    доводу, что у хуков: шаблон, которого нет, снаружи неотличим от шаблона,
+    который забыли прочесть. Здесь же — связность с `records:` и lint-records:
+    хук без записей или без формата молча не проверял бы ничего."""
+    names = _card_list(card, "formats")
+    known = known_formats()
+    unknown = [n for n in names if n not in known]
+    if unknown:
+        die("карточка: нет таких форматов: %s\nформаты плагина: %s"
+            % (", ".join(unknown), ", ".join(known) or "ни одного"))
+    records = card_records(card)
+    if records and not names:
+        die("карточка: records: без formats: — не сказано, по какому шаблону записи")
+    if records and len(names) > 1:
+        die("карточка: records: с несколькими formats: (%s) — какой формат к каким "
+            "записям, пока не задаётся; оставьте один" % ", ".join(names))
+    if "lint-records" in _card_list(card, "hooks") and not (names and records):
+        die("карточка: хук lint-records без formats: и records: — сверять не с чем")
+    # Записи, которые роль не может писать, — это юнит, бесполезный с первой
+    # минуты: ограда путей отклонит запись раньше линтера (найдено сквозным
+    # прогоном build → install, 2026-09-24).
+    roots = [_glob_root(w) for w in _card_list(card, "writes")]
+    for r in records:
+        rr = _glob_root(r)
+        if not any(w == "" or rr == w or rr.startswith(w + "/") for w in roots):
+            die("карточка: records: %s лежит вне writes: (%s) — ассистент не сможет писать свои "
+                "записи" % (r, ", ".join(_card_list(card, "writes")) or "роль только читает"))
+    return names
+
+
+def _glob_root(glob):
+    """Каталог глоба до первого сегмента со звёздочкой: docs/x/**/*.md → docs/x."""
+    root = []
+    for seg in glob.strip("/").split("/"):
+        if any(ch in seg for ch in "*?["):
+            break
+        root.append(seg)
+    return "/".join(root)
+
+
+def card_records(card):
+    """`records:` — глобы от корня проекта: где лежат записи по формату."""
+    return _card_list(card, "records")
+
+
+def install_formats(home, card):
+    """Привезти formats/<имя>/ из плагина в <дом>/formats/<имя>/.
+
+    Копия, а не ссылка на плагин — довод тот же, что у HOOK_SHIPPED: дом
+    переживает обновление и переезд плагина. Каталог производный и
+    переписывается целиком при каждом install/reset/grant: убранный из
+    карточки формат уходит и из дома."""
+    names = card_formats(card)
+    dst_root = os.path.join(home, "formats")
+    if os.path.isdir(dst_root):
+        shutil.rmtree(dst_root)
+    out = []
+    for n in names:
+        src = os.path.join(plugin_dir(), "formats", n)
+        dst = os.path.join(dst_root, n)
+        shutil.copytree(src, dst, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        out.append(dst)
+    return out
+
+
+def formats_text(home, card):
+    """Строки для CLAUDE.md дома: где записи и по какому шаблону."""
+    names = card_formats(card)
+    if not names:
+        return ""
+    records = card_records(card)
+    hooked = "lint-records" in _card_list(card, "hooks")
+    lines = ["", "## Форматы записей", ""]
+    for n in names:
+        tpl = "`%s`" % os.path.join(home, "formats", n, "TEMPLATE.md")
+        lint = "`%s`" % os.path.join(home, "formats", n, "lint.py")
+        if records:
+            lines.append("- Записи в %s — по шаблону %s. Линтер: %s%s."
+                         % (", ".join("`%s`" % r for r in records), tpl, lint,
+                            " (хук lint-records не пустит запись с замечаниями)"
+                            if hooked else ""))
+        else:
+            lines.append("- Формат %s — шаблон %s, линтер %s." % (n, tpl, lint))
+    return "\n".join(lines) + "\n"
+
+
+def write_home_claude_md(home, role, project, card):
+    """CLAUDE.md дома — один писатель на install и reset."""
+    writes = card.get("writes") or ["— только чтение"]
+    path = os.path.join(home, "CLAUDE.md")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(CLAUDE_MD.format(role=role, project=project, home=home,
+                                  writes=", ".join("`%s`" % w for w in writes),
+                                  formats=formats_text(home, card)))
+    return path
 
 
 def card_ledgers(card):
@@ -525,6 +653,7 @@ def _write_hook_config(d, home, project, role, names, card):
     with open(cfg, "w", encoding="utf-8") as fh:
         json.dump({"role": role, "home": home, "project": project,
                    "hooks": list(names), "ledger": card_ledgers(card),
+                   "formats": card_formats(card), "records": card_records(card),
                    "note": "сгенерировано cckit assistant install — "
                            "правка исчезнет при reset"},
                   fh, indent=1, ensure_ascii=False)
@@ -632,7 +761,8 @@ def write_card(home, role, card, body):
           "memory": "project"}
     ignored = [k for k in card if k not in
                ("name", "summary", "access", "writes", "model", "effort",
-                "budget_usd", "compact_at", "hooks", "ledger")]
+                "budget_usd", "compact_at", "hooks", "ledger", "formats",
+                "records")]
     if ignored:
         print("карточка: ключи без действия, отброшены: " + ", ".join(ignored))
     path = os.path.join(home, ".claude", "agents", role + ".md")
@@ -707,6 +837,7 @@ def apply_grants(home, role, project, card, granted, extra_read=None):
     """
     if extra_read is None:
         extra_read = read_recipe(home).get("extra_read") or []
+    card_formats(card)              # неизвестный формат — до первой записи
     write_launch_json(home, role, project, granted, card.get("budget_usd"),
                       extra_read=extra_read)
     write_settings(home, role, project, card, granted, extra_read=extra_read)
@@ -714,6 +845,7 @@ def apply_grants(home, role, project, card, granted, extra_read=None):
     # Запись в settings.json без файла рядом — это хук, который не сработает,
     # и узнать об этом можно только по тому, что ничего не произошло.
     install_hooks(home, project, role, card)
+    install_formats(home, card)
 
 
 def sync_card_tools(home, role, granted):
@@ -764,18 +896,28 @@ def owner_rules(home):
         return {"rules": []}
 
 
+# Группы, которые правило владельца закрывает вместе: «deny shell» — это «не давать
+# Bash», и выдача shell-subagents кладёт тот же Bash, только субагентам (взломщик 1.2).
+OWNER_RULE_COVERS = {"shell": ("shell", "shell-subagents"), "shell-subagents": ("shell-subagents", "shell")}
+
+
+def _owner_rule_covers(rule_value, cap):
+    return cap in OWNER_RULE_COVERS.get(rule_value, (rule_value,))
+
+
 def apply_owner_rules(home, granted):
     """The owner's explicit orders are applied LAST, over card and grants."""
     for r in owner_rules(home).get("rules", []):
-        if r.get("what") == "deny-capability" and r.get("value") in granted:
-            granted.discard(r["value"])
+        if r.get("what") == "deny-capability":
+            for cap in [c for c in granted if _owner_rule_covers(r.get("value"), c)]:
+                granted.discard(cap)
     return granted
 
 
 def check_owner_rule(home, cap):
     """Refuse the first attempt, and say it in the owner's own words."""
     for r in owner_rules(home).get("rules", []):
-        if r.get("what") == "deny-capability" and r.get("value") == cap and not r.get("overridden"):
+        if r.get("what") == "deny-capability" and _owner_rule_covers(r.get("value"), cap) and not r.get("overridden"):
             return ("«%s» закрыл владелец %s. Его слова: «%s»\n"
                     "Это не твоё решение. Повтори с --override-owner-rule, если уверен —"
                     " снятие запишется в OWNER-RULES.json."
@@ -1409,6 +1551,51 @@ def _lint_effect(runs, disk, sub_asked):
                      "не писал" % main[1])
 
 
+def _shipped_hook():
+    """cckit_hook.py из плагина — чтобы проба узнавала records тем же кодом,
+    что и хук, а не своей копией правил."""
+    import importlib.util
+    path = os.path.join(plugin_dir(), "hooks", "assistant", "cckit_hook.py")
+    spec = importlib.util.spec_from_file_location("cckit_hook_shipped", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def record_probe_path(project, globs, marker):
+    """Путь в records, которого нет и не будет: пробная запись без шапки.
+
+    None — из глобов не вывести (классы `[…]` и т.п.); тогда проба честно
+    говорит «не доказан», а не угадывает."""
+    match = _shipped_hook().records_match
+    for g in globs or ():
+        if "[" in g:
+            continue
+        rel = g.replace("**/", "").replace("**", marker).replace("*", marker).replace("?", "x")
+        p = rel if os.path.isabs(rel) else os.path.join(project, rel)
+        if marker in os.path.basename(p) and not os.path.exists(p) and match(p, project, globs):
+            return p
+    return None
+
+
+def _records_effect(runs, path, on_disk):
+    """Вердикт lint-records: ДИСК первым. Проба пишет только запись без шапки
+    — правильную она оставила бы в проекте; «пропускает правильную» меряют
+    тесты (tests/test_records.py)."""
+    if not path:
+        return "НЕ ДОКАЗАН", "из records не вывести пробный путь"
+    name = os.path.basename(path)
+    touched = [r for r in runs if name in (r.get("targets") or [])]
+    blocked = [r for r in touched if r.get("blocked")]
+    if on_disk:
+        if blocked:
+            return "НЕ ДОШЁЛ", "линтер формата отказал, а запись легла на диск"
+        return "НЕ РАЗЛИЧИЛ", "запись без шапки легла в records — линтер не возразил"
+    if not blocked:
+        return "НЕ ДОКАЗАН", "модель не писала пробную запись — наблюдать отказ не на чем"
+    return "ок", "запись без шапки в records отказана до записи и на диск не легла"
+
+
 def _reports_lines(home):
     p = os.path.join(home, "reports.jsonl")
     try:
@@ -1492,6 +1679,24 @@ def probe_hooks(home, project, card=None, granted=None):
         granted = (read_recipe(home) or {}).get("granted") or []
     sub_marker = ("HOOKSUB-" + uuid.uuid4().hex[:8].upper()
                   if "lint-learned" in plan and "spawn" in set(granted) else None)
+    rec_path, rec_missing = None, []
+    if "lint-records" in plan:
+        rec_globs = card_records(card or {})
+        if not rec_globs:
+            try:
+                with open(os.path.join(hooks_dir(home), "config.json"),
+                          encoding="utf-8") as fh:
+                    rec_globs = json.load(fh).get("records") or []
+            except Exception:
+                rec_globs = []
+        rec_path = record_probe_path(project, rec_globs,
+                                     "HOOKREC-" + uuid.uuid4().hex[:8].upper())
+        # Каталоги, которых нет: Write создаст их, проба уберёт — только их.
+        d = os.path.dirname(rec_path) if rec_path else None
+        while d and not os.path.exists(d):
+            rec_missing.append(d)
+            d = os.path.dirname(d)
+    rec_on_disk = False
     learned = os.path.join(home, "LEARNED.md")
     had_learned = os.path.exists(learned)
     saved_learned = None
@@ -1546,6 +1751,11 @@ def probe_hooks(home, project, card=None, granted=None):
                        "статуса» без строки статуса; если правке откажут — "
                        "пусть не повторяет и не исправляет, а просто скажет."
                        % (learned, sub_marker))
+        if rec_path:
+            ask.append("Создай инструментом Write (не через Bash) файл %s с "
+                       "содержимым «# %s» — одной строкой, без шапки. Если "
+                       "правке откажут, не повторяй и не исправляй её."
+                       % (rec_path, os.path.basename(rec_path)))
         if not ask:
             ask.append("Ответь одним словом: готов.")
         # Потолок НЕ маленький, и это измерено, а не выбрано на глаз: живой
@@ -1569,6 +1779,7 @@ def probe_hooks(home, project, card=None, granted=None):
                 disk = _learned_on_disk(fh.read(), marker, sub_marker)
         except OSError:
             disk = _learned_on_disk("", marker, sub_marker)
+        rec_on_disk = bool(rec_path) and os.path.exists(rec_path)
 
         def learned_changed():
             try:
@@ -1592,6 +1803,9 @@ def probe_hooks(home, project, card=None, granted=None):
                 if name == "lint-learned" and not learned_changed():
                     by_hook[name] = ("НЕ ДОКАЗАН",
                                      "модель не тронула LEARNED.md — хук и звать было не на чем")
+                elif name == "lint-records" and not rec_on_disk:
+                    by_hook[name] = ("НЕ ДОКАЗАН",
+                                     "модель не писала пробную запись — хук и звать было не на чем")
                 else:
                     by_hook[name] = ("НЕ СРАБОТАЛ",
                                      "CLI ни разу не выполнил команду под " + spec["event"])
@@ -1604,6 +1818,9 @@ def probe_hooks(home, project, card=None, granted=None):
             if name == "lint-learned":
                 by_hook[name] = _lint_effect(runs, disk, bool(sub_marker))
                 continue
+            if name == "lint-records":
+                by_hook[name] = _records_effect(runs, rec_path, rec_on_disk)
+                continue
             by_hook[name] = _hook_effect(name, spec["event"], runs, reply,
                                          nonce, home, reports_before)
     finally:
@@ -1614,6 +1831,13 @@ def probe_hooks(home, project, card=None, granted=None):
                 fh.write(saved_learned)
         elif os.path.exists(learned):
             os.remove(learned)
+        if rec_path and os.path.exists(rec_path):
+            os.remove(rec_path)
+        for d in rec_missing:           # от глубокого к мелкому, только свои
+            try:
+                os.rmdir(d)
+            except OSError:
+                break
         shutil.rmtree(work, ignore_errors=True)
 
     note = " · ".join("%s: %s — %s" % (n, by_hook[n][0], by_hook[n][1])
@@ -1637,7 +1861,7 @@ CLAUDE_MD = """# {role} — привязка к проекту
 
 Этот файл собран установщиком из роли и привязки. Правка здесь исчезнет при
 следующем `--reset`. Всё, что ты узнал, идёт в `LEARNED.md`.
-
+{formats}
 @LEARNED.md
 """
 
@@ -1822,6 +2046,7 @@ def cmd_install(argv):
 
     rdir = role_dir(role)
     card = load_card(os.path.join(rdir, "card.yaml"))
+    card_formats(card)              # неизвестный формат — до того, как дом создан
     role_md = os.path.join(rdir, "ROLE.md")
     if not os.path.exists(role_md):
         die("нет ROLE.md у роли " + role)
@@ -1847,10 +2072,7 @@ def cmd_install(argv):
         die("«shell-subagents» без «spawn» не даёт ничего: субагентов звать нечем")
     apply_grants(home, role, project, card, granted, extra_read=extra_read)
 
-    writes = card.get("writes", []) or ["— только чтение"]
-    with open(os.path.join(home, "CLAUDE.md"), "w", encoding="utf-8") as fh:
-        fh.write(CLAUDE_MD.format(role=role, project=project, home=home,
-                                  writes=", ".join("`%s`" % w for w in writes)))
+    write_home_claude_md(home, role, project, card)
     learned = os.path.join(home, "LEARNED.md")
     if not os.path.exists(learned):
         open(learned, "w", encoding="utf-8").write(LEARNED_MD)
@@ -2048,10 +2270,7 @@ def cmd_reset(argv):
     write_card(home, role, card, body)
     granted = apply_owner_rules(home, set(it.get("granted") or BASE_CAPS))
     apply_grants(home, role, project, card, granted)
-    writes = card.get("writes") or ["— только чтение"]
-    with open(os.path.join(home, "CLAUDE.md"), "w", encoding="utf-8") as fh:
-        fh.write(CLAUDE_MD.format(role=role, project=project, home=home,
-                                  writes=", ".join("`%s`" % w for w in writes)))
+    write_home_claude_md(home, role, project, card)
     kept = ["LEARNED.md", "memory/", "OWNER-RULES.json"]
     if hard:
         attic = os.path.join(assistants_dir(), ".attic", os.path.basename(home), now().replace(":", "-"))

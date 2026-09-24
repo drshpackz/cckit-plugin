@@ -7,22 +7,31 @@
    "provides": [
     "writes-findings"
    ],
+   "requires_input": [
+    "records"
+   ],
    "card_key": "formats",
    "card_value": "seed-record",
-   "role_text": "Находки для других агентов пиши записями-зернами по шаблону formats/seed-record/TEMPLATE.md плагина — шапка «вопрос · дата · коммит · уверенность · источник», вердикт первым разделом, открытые вопросы последним.",
-   "status": "wired-later",
-   "proof": "tests/test_seed_record.py; 23 из 25 живых досье проходят lint.py",
+   "role_text": "Находки для других агентов пиши записями-зернами по шаблону formats/seed-record/TEMPLATE.md своего дома (путь — в CLAUDE.md дома) — шапка «вопрос · дата · коммит · уверенность · источник», вердикт первым разделом, открытые вопросы последним.",
+   "status": "works",
+   "proof": "tests/test_seed_record.py, tests/test_records.py; 23 из 25 живых досье проходят lint.py",
    "origin": "design-scout, boomzi-assistant; f815c93",
    "files": [
     "formats/seed-record"
    ],
    "requires": [],
-   "requires_input": [],
    "grants": [],
    "writes": [],
    "hooks": [],
    "manifest": "formats/seed-record/component.yaml",
-   "version": "c277b30"
+   "blobs": [
+    "formats/seed-record/README.md",
+    "formats/seed-record/TEMPLATE.md",
+    "formats/seed-record/component.yaml",
+    "formats/seed-record/lint.py"
+   ],
+   "version": "15d17364897e",
+   "commit": "c277b30"
   },
   {
    "id": "lint-learned",
@@ -48,7 +57,47 @@
    "writes": [],
    "hooks": [],
    "manifest": "components/hooks/lint-learned.yaml",
-   "version": "не в git"
+   "blobs": [
+    "bin/cckit_learned.py",
+    "hooks/assistant/cckit_hook.py",
+    "hooks/assistant/lint-learned",
+    "hooks/run-hook.cmd"
+   ],
+   "version": "807773ff58ce",
+   "commit": "d87c739"
+  },
+  {
+   "id": "lint-records",
+   "kind": "hook",
+   "summary": "PreToolUse — запись в records: карточки, не прошедшая линтер формата, не ложится на диск",
+   "provides": [
+    "writes-findings"
+   ],
+   "requires_input": [
+    "records"
+   ],
+   "card_key": "hooks",
+   "card_value": "lint-records",
+   "status": "works",
+   "proof": "tests/test_records.py, проба хуков при установке",
+   "origin": "1.3",
+   "files": [
+    "hooks/assistant/lint-records",
+    "hooks/assistant/cckit_hook.py",
+    "hooks/run-hook.cmd"
+   ],
+   "requires": [],
+   "grants": [],
+   "writes": [],
+   "hooks": [],
+   "manifest": "components/hooks/lint-records.yaml",
+   "blobs": [
+    "hooks/assistant/cckit_hook.py",
+    "hooks/assistant/lint-records",
+    "hooks/run-hook.cmd"
+   ],
+   "version": "526dc29f3ee9",
+   "commit": "d87c739"
   },
   {
    "id": "read-ledger",
@@ -75,7 +124,13 @@
    "writes": [],
    "hooks": [],
    "manifest": "components/hooks/read-ledger.yaml",
-   "version": "не в git"
+   "blobs": [
+    "hooks/assistant/cckit_hook.py",
+    "hooks/assistant/read-ledger",
+    "hooks/run-hook.cmd"
+   ],
+   "version": "71747d9e104f",
+   "commit": "d87c739"
   },
   {
    "id": "report-done",
@@ -100,7 +155,13 @@
    "writes": [],
    "hooks": [],
    "manifest": "components/hooks/report-done.yaml",
-   "version": "не в git"
+   "blobs": [
+    "hooks/assistant/cckit_hook.py",
+    "hooks/assistant/report-done",
+    "hooks/run-hook.cmd"
+   ],
+   "version": "572a3144f361",
+   "commit": "d87c739"
   },
   {
    "id": "fan-out",
@@ -122,7 +183,9 @@
    "writes": [],
    "hooks": [],
    "manifest": "practices/fan-out/component.yaml",
-   "version": "c277b30"
+   "blobs": [],
+   "version": "c29071a26dbe",
+   "commit": "c277b30"
   },
   {
    "id": "write-early",
@@ -142,7 +205,9 @@
    "writes": [],
    "hooks": [],
    "manifest": "practices/write-early/component.yaml",
-   "version": "c277b30"
+   "blobs": [],
+   "version": "dfd415d1f343",
+   "commit": "c277b30"
   },
   {
    "id": "window-1m",
@@ -165,7 +230,9 @@
    "writes": [],
    "hooks": [],
    "manifest": "practices/window-1m/component.yaml",
-   "version": "c277b30"
+   "blobs": [],
+   "version": "5cff1a084c2a",
+   "commit": "c277b30"
   },
   {
    "id": "speed-patterns",
@@ -186,7 +253,14 @@
    "writes": [],
    "hooks": [],
    "manifest": "skills/speed-patterns/component.yaml",
-   "version": "c277b30"
+   "blobs": [
+    "skills/speed-patterns/SKILL.md",
+    "skills/speed-patterns/TESTING.md",
+    "skills/speed-patterns/component.yaml",
+    "skills/speed-patterns/scripts/sampler.py"
+   ],
+   "version": "0c482a137d34",
+   "commit": "c277b30"
   }
  ],
  "roles": [
@@ -256,7 +330,12 @@
    "model": "claude-fable-5-1[1m]",
    "effort": "xhigh",
    "compact_at": "900000",
-   "version": "6a5eb25"
+   "blobs": [
+    "assistants/cckit-smith/ROLE.md",
+    "assistants/cckit-smith/card.yaml"
+   ],
+   "version": "328f64b87a2d",
+   "commit": "6a5eb25"
   },
   {
    "id": "design-hand",
@@ -322,7 +401,12 @@
    "model": "claude-opus-5[1m]",
    "effort": "xhigh",
    "compact_at": "900000",
-   "version": "6a5eb25"
+   "blobs": [
+    "assistants/design-hand/ROLE.md",
+    "assistants/design-hand/card.yaml"
+   ],
+   "version": "95f0e6b5f302",
+   "commit": "6a5eb25"
   },
   {
    "id": "design-scout",
@@ -389,7 +473,12 @@
    "model": "claude-opus-5-5[1m]",
    "effort": "xhigh",
    "compact_at": "900000",
-   "version": "6a5eb25"
+   "blobs": [
+    "assistants/design-scout/ROLE.md",
+    "assistants/design-scout/card.yaml"
+   ],
+   "version": "acb4148113bd",
+   "commit": "6a5eb25"
   },
   {
    "id": "under-the-hood",
@@ -457,7 +546,12 @@
    "model": "claude-opus-5-5[1m]",
    "effort": "xhigh",
    "compact_at": "900000",
-   "version": "6a5eb25"
+   "blobs": [
+    "assistants/under-the-hood/ROLE.md",
+    "assistants/under-the-hood/card.yaml"
+   ],
+   "version": "4c4bc8a74b5a",
+   "commit": "6a5eb25"
   }
  ]
 }

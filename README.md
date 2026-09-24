@@ -118,6 +118,41 @@ context, the linter's verdict, the new line in the journal. A hook that is
 registered and never fires reports `НЕ СРАБОТАЛ`, and the install is not
 reported as verified.
 
+## The library, and its catalog as an API
+
+Assistants are assembled from parts — hooks, formats, practices, settings —
+each with a manifest next to its files. `bin/cckit_library.py` builds the
+catalog from the manifests and assembles a **unit**: a base role plus the parts
+you name by what they give, not by file.
+
+```
+python3 bin/cckit_library.py needs                                   # what can be ordered, and who gives it
+python3 bin/cckit_library.py find ledger                             # search parts and roles
+python3 bin/cckit_library.py order --role design-scout --needs reports-to-main,long-tasks   # the assembly sheet, nothing written
+python3 bin/cckit_library.py build --role design-scout --needs writes-findings,long-tasks --records docs/vscode-internals/dossiers --name my-scout --install --project .
+python3 bin/cckit_library.py fetch --needs writes-findings --to ./parts --from gh:drshpackz/cckit-plugin@main
+```
+
+`build` writes the unit into your library (`$CCKIT_LIBRARY`, else
+`~/.cckit/library/<name>/`): `card.yaml` from the sheet and `ROLE.md` = the base
+role plus a «Детали юнита» section. It never overwrites a role already there
+without `--force`. With `--install --project` it hands the unit to the installer
+with the grants the order asked for; `--i-mean-it` reaches the installer only if
+you typed it. Every input a part asks for (`--ledger`, `--records`, …) becomes a
+line of the card.
+
+The catalog is published with the repository and read as an API:
+
+- latest: https://raw.githubusercontent.com/drshpackz/cckit-plugin/main/library.json
+- pinned: `https://raw.githubusercontent.com/drshpackz/cckit-plugin/<sha>/library.json`
+
+A part's `version` is its **content**: sha256[:12] over its manifest and every
+file in `blobs`, so the catalog is regenerated in the same commit as the part
+and never lags behind it; `commit` is only for reference. `fetch --from gh:…`
+downloads the catalog and the ordered parts, recomputes each hash and refuses —
+writing nothing — if one does not match. Without `--from` it reads your local
+git (`--ref SHA`). `LIBRARY.md` is the same catalog for people.
+
 ## Capabilities are granted, not baked in
 
 Roles reuse across projects; risk is a property of the project. An assistant
